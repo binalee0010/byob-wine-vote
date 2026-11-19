@@ -1,0 +1,176 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { resolve } from 'node:path';
+import { createApp, client, TEST_PASSWORD, photo, PNG } from './harness.mjs';
+
+const historyPath = '/api/admin/history';
+const resetPath = '/api/admin/reset-all';
+const byobPath = '/api/admin/activities/byob';
+const candidatePath = '/api/admin/candidates';
+const statePath = '/api/admin/state';
+const open = (admin, revision) => admin(`${byobPath}/state`, 'POST', { action: 'open', revision });
+const close = (admin, revision) => admin(`${byobPath}/state`, 'POST', { action: 'close', revision });
+const reset = (admin, state) => admin(resetPath, 'POST', { ...expected(state), confirm: 'reset-all' });
+const expected = state => ({ expectedRevision: state.activities[0].revision, expectedRosterRevision: state.rosterRevision });
+const readState = async admin => {
+  const response = await admin(statePath);
+  assert.equal(response.status, 200);
+  return response.body;
+};
+const cookie = response => response.headers.get('set-cookie').split(';')[0];
+const login = admin => admin('/api/admin/login', 'POST', { password: TEST_PASSWORD });
+const addName = async (admin, name, revision = 0) => {
+  const response = await admin(candidatePath, 'POST', { name, requestId: crypto.randomUUID(), revision });
+  assert.equal(response.status, 200);
+  return response.body.candidate;
+};
+const addPhoto = async (admin, name, revision = 0) => {
+  const file = photo(name);
+  file.set('revision', String(revision));
+  const response = await admin(candidatePath, 'POST', file);
+  assert.equal(response.status, 200);
+  return response.body.candidate;
+};
+
+test('manual history freezes private results and survives full reset, session revocation, and restart', async () => {
+  await mkdir('.wrangler', { recursive: true });
+  const prefix = resolve('.wrangler/vote-history-');
+  const persistenceRoot = await mkdtemp(prefix);
+  const options = { persist: true, persistenceRoot };
+  let local;
+  try {
+    local = await createApp(options);
+    let admin = client(local.mf), anon = client(local.mf);
+    const authenticated = await login(admin);
+    assert.equal(authenticated.status, 200);
+    const adminCookie = cookie(authenticated);
+    const participant = client(local.mf);
+    const joined = await participant('/api/session', 'POST', { name: '기록에서 숨길 참가자' });
+    assert.equal(joined.status, 200);
+    const participantCookie = cookie(joined);
+    const initial = await readState(admin);
+    assert.equal(initial.currentHistoryId, null);
+    assert.deepEqual((await admin(historyPath)).body, { records: [] });
+    assert.equal((await anon(historyPath)).status, 401);
+    assert.equal((await participant(historyPath, 'POST', expected(initial))).status, 401);
+    assert.equal((await admin(historyPath, 'POST', expected(initial), { headers: { Origin: 'https://other.test' } })).status, 403);
+    assert.equal((await admin(historyPath, 'POST', expected(initial))).body.code, 'history_not_closed');
+    assert.equal((await admin('/api/admin/settings', 'PATCH', { event: { title: '기록할 행사', participationMode: 'restricted' },
+      activities: [{ id: 'byob', title: '기록할 투표', revision: 0, votingMethod: 'custom', rankPoints: [7, 2], resultVisibility: 'public' }]
+    })).status, 200);
+    const photographed = await addPhoto(admin, '기록 사진');
+    const named = await addName(admin, '이름만 기록');
+    const photos = await local.mf.getR2Bucket('PHOTOS');
+    const key = (await photos.list()).objects[0].key;
+    assert.equal((await open(admin, 0)).status, 200);
+    assert.equal((await admin(historyPath, 'POST', expected(initial))).body.code, 'history_not_closed');
+    assert.equal((await participant('/api/activities/byob/answer', 'PUT', { ranking: [named.id, photographed.id], revision: 0 })).status, 200);
+    assert.equal((await close(admin, 0)).status, 200);
+    assert.equal((await admin('/api/admin/settings', 'PATCH', { activities: [{ id: 'byob', revision: 0, resultVisibility: 'private' }] })).status, 200);
+    const before = await readState(admin);
+    assert.equal((await admin(historyPath, 'POST', { ...expected(before), expectedRosterRevision: before.rosterRevision + 1 })).body.code, 'roster_changed');
+    const saves = await Promise.all([admin(historyPath, 'POST', expected(before)), admin(historyPath, 'POST', expected(before))]);
+    assert.deepEqual(saves.map(response => response.status), [200, 200]);
+    assert.deepEqual(saves.map(response => response.body.reused).sort(), [false, true]);
+    const id = saves[0].body.id;
+    assert.equal(saves[1].body.id, id);
+    const detailPath = `${historyPath}/${id}`;
+    const locked = await readState(admin);
+    assert.equal(locked.currentHistoryId, id);
+    assert.equal(locked.activities[0].resultsLocked, true);
+    assert.equal(locked.activities[0].published, false);
+    assert.equal((await open(admin, 0)).status, 409);
+    assert.equal((await anon('/api/results/byob')).status, 403);
+    assert.equal((await anon(detailPath)).status, 401);
+    assert.equal((await participant(detailPath)).status, 401);
+    const detail = await admin(detailPath);
+    assert.equal(detail.headers.get('cache-control'), 'no-store');
+    const { record } = detail.body;
+    const { rows, ...summary } = record;
+    assert.deepEqual((await admin(historyPath)).body.records, [summary]);
+    assert.deepEqual({ ...summary, startedAt: null, savedAt: null }, { id, title: '기록할 행사', activityTitle: '기록할 투표',
+      startedAt: null, savedAt: null, votingMethod: 'custom', rankPoints: [7, 2], ballotCount: 1 });
+    assert(Number.isFinite(Date.parse(record.startedAt)));
+    assert(Number.isFinite(Date.parse(record.savedAt)));
+    const archivedPhoto = `${detailPath}/photos/${photographed.id}`;
+    assert.deepEqual(rows, before.byobResults.map(row => ({ ...row, photoUrl: row.id === photographed.id ? archivedPhoto : null })));
+    assert(!JSON.stringify(record).includes(joined.body.participant.id));
+    assert(!JSON.stringify(record).includes(joined.body.participant.name));
+    assert(!JSON.stringify(record).includes(key));
+    assert.equal((await anon(archivedPhoto)).status, 401);
+    assert.equal((await admin(`${detailPath}/photos/${named.id}`)).status, 404);
+    assert.equal((await admin('/api/admin/settings', 'PATCH', { activities: [{ id: 'byob', revision: 0, resultVisibility: 'public' }] })).status, 200);
+    const resetView = await readState(admin);
+    assert.equal((await admin(resetPath, 'POST', expected(locked))).status, 400);
+    assert.equal((await admin(resetPath, 'POST', { ...expected(locked), confirm: 'reset-all', expectedRosterRevision: locked.rosterRevision + 1 })).body.code, 'roster_changed');
+    assert.equal((await admin(resetPath, 'POST', { ...expected(locked), confirm: 'reset-all' }, { headers: { Origin: 'https://other.test' } })).status, 403);
+    assert.deepEqual(await readState(admin), resetView);
+    const cleared = await reset(admin, locked);
+    assert.deepEqual(cleared.body, { ok: true, revision: 1, cleanupPending: 0 });
+    assert.equal((await participant('/api/bootstrap')).body.participant, null);
+    assert.equal((await admin(historyPath, 'POST', expected(locked))).body.code, 'revision_changed');
+    assert.equal((await reset(admin, locked)).body.code, 'revision_changed');
+    const after = await readState(admin);
+    assert.deepEqual(after.event, locked.event);
+    assert.deepEqual(after.activities[0], { ...resetView.activities[0], revision: 1, status: 'waiting', started: false, published: false, resultVisibility: 'private', resultsLocked: false });
+    assert.equal(after.currentHistoryId, null);
+    assert.deepEqual(after.participants, []);
+    assert.deepEqual(after.candidates, []);
+    assert.deepEqual(after.answers.byob, []);
+    assert.equal((await admin(photographed.photoUrl)).status, 404);
+    assert.deepEqual((await photos.list()).objects.map(object => object.key), [key]);
+    await local.mf.dispose();
+    local = undefined;
+    local = await createApp(options);
+    admin = client(local.mf, adminCookie);
+    anon = client(local.mf);
+    assert.deepEqual(await readState(admin), after);
+    assert.deepEqual((await admin(detailPath)).body.record, record);
+    assert.equal((await client(local.mf, participantCookie)('/api/bootstrap')).body.participant, null);
+    const file = await local.mf.dispatchFetch(`https://vote.test${archivedPhoto}`, { headers: { Cookie: adminCookie } });
+    assert.equal(file.status, 200);
+    assert.equal(file.headers.get('cache-control'), 'no-store');
+    assert.deepEqual(Buffer.from(await file.arrayBuffer()), PNG);
+    assert.equal((await anon(archivedPhoto)).status, 401);
+  } finally {
+    if (local) await local.mf.dispose();
+    assert(persistenceRoot.startsWith(prefix));
+    await rm(persistenceRoot, { recursive: true, force: true });
+  }
+});
+
+test('archive and reset serialize and cleanup preserves only the recorded photo', async () => {
+  const local = await createApp();
+  try {
+    const admin = client(local.mf);
+    assert.equal((await login(admin)).status, 200);
+    const archived = await addPhoto(admin, '남길 사진');
+    assert.equal((await open(admin, 0)).status, 200);
+    assert.equal((await close(admin, 0)).status, 200);
+    const before = await readState(admin);
+    const race = await Promise.all([admin(historyPath, 'POST', expected(before)), reset(admin, before)]);
+    assert.equal(race[1].status, 200);
+    assert([200, 409].includes(race[0].status));
+    const photos = await local.mf.getR2Bucket('PHOTOS');
+    const records = (await admin(historyPath)).body.records;
+    assert.equal(records.length, Number(race[0].status === 200));
+    assert.equal((await photos.list()).objects.length, records.length);
+    assert.equal((await readState(admin)).currentHistoryId, null);
+    assert.equal((await readState(admin)).activities[0].revision, 1);
+    const unrecorded = await addPhoto(admin, '지울 사진', 1);
+    assert.equal((await open(admin, 1)).status, 200);
+    assert.equal((await close(admin, 1)).status, 200);
+    const saved = await admin(historyPath, 'POST', expected(await readState(admin)));
+    assert.equal(saved.status, 200);
+    assert.equal((await admin(`${byobPath}/reset`, 'POST', { confirm: 'reset', expectedRevision: 1 })).status, 200);
+    assert.equal((await admin(`${candidatePath}/${unrecorded.id}`, 'DELETE', { revision: 2 })).status, 200);
+    assert.equal((await admin(`${historyPath}/${saved.body.id}/photos/${unrecorded.id}`)).status, 200);
+    await addPhoto(admin, '저장되지 않은 새 사진', 2);
+    const current = await readState(admin);
+    assert.equal((await reset(admin, current)).status, 200);
+    assert.equal((await photos.list()).objects.length, records.length + 1);
+    if (records.length) assert.equal((await admin(`${historyPath}/${records[0].id}/photos/${archived.id}`)).status, 200);
+    assert.equal((await admin(`${historyPath}/${saved.body.id}/photos/${unrecorded.id}`)).status, 200);
+  } finally { await local.mf.dispose(); }
+});
