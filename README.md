@@ -57,7 +57,7 @@ Worker가 화면과 API를 제공합니다. D1에는 투표와 참가자 데이�
 
 4. Wrangler가 출력한 HTTPS 주소에서 `/admin`에 로그인하세요. 참가자에게는 같은 주소의 `/`를 공유합니다. 사용자 지정 도메인은 자기 Worker의 도메인 설정에서 연결할 수 있습니다.
 
-GitHub Actions는 푸시와 PR에서 자동 검사만 수행합니다. 위 배포 명령은 본인의 Cloudflare 계정에서 실행하세요. 로컬 비밀 파일과 Wrangler 상태는 Git에서 제외됩니다.
+GitHub Actions는 푸시와 PR에서 자동 검사만 수행합니다. 위 배포 명령은 본인의 Cloudflare 계정에서 실행하세요. Cloudflare Workers Builds로 자동 배포하려면 자기 저장소의 운영 브랜치만 연결하고, 저장소 루트에서 `NODE_VERSION=24`, 기본 자동 의존성 설치 `npm ci`, 빌드 명령 `npm run typecheck && npm test`, 배포 명령 `npm run deploy`를 지정합니다. `deploy`가 프론트를 빌드합니다. 기존 운영 Worker를 갱신하는 운영자는 아래의 `deploy:existing` 설정을 사용하세요. 로컬 비밀 파일과 Wrangler 상태는 Git에서 제외됩니다.
 
 ## 기존 운영 Worker의 코드만 교체
 
@@ -65,7 +65,20 @@ GitHub Actions는 푸시와 PR에서 자동 검사만 수행합니다. 위 배�
 
 1. [deploy-existing.example.json](deploy-existing.example.json)을 저장소 루트의 `.deploy-existing.json`으로 복사하고 모든 자리표시자를 기존 운영 값으로 바꿉니다. 이 비공개 파일은 Git에서 제외됩니다. `adminSessionCookie`와 `participantSessionCookie`에는 기존의 정확한 `__Host-` 쿠키 이름을 넣습니다. 값이 달라지면 기존 로그인은 인식되지 않습니다. `publicOrigin`은 정식 참가자 HTTPS origin, `routes`에는 그 호스트와 유지할 기존 별칭 호스트를 넣습니다.
 2. 먼저 `npm run deploy:existing:check`로 패키지를 검증한 뒤 `npm run deploy:existing`로 배포합니다. 이 명령은 기존 설정으로 임시 Wrangler 파일을 만들고 실행 후 지웁니다. D1 마이그레이션 명령은 실행하지 않으며 SQL이 없는 `migrations-existing/`만 가리킵니다. 새 설치용 `npm run deploy`와 구분해서 사용하세요.
-3. Cloudflare Workers Builds에서는 Node 24, 빌드 명령 `npm ci`, 배포 명령 **`npm run deploy:existing`**를 지정하고 빌드 비밀 환경변수 `VOTE_DEPLOY_CONFIG`에 `.deploy-existing.json`과 같은 JSON 전체를 넣습니다. 환경변수가 로컬 파일보다 우선합니다. 실제 계정·DB ID·도메인·쿠키 이름을 공개 저장소에 커밋하지 마세요. Worker의 기존 `ADMIN_PASSWORD_HASH` secret은 빌드 JSON에 넣지 않으며 그대로 유지합니다. 배포 권한은 해당 Worker·리소스에 필요한 계정 권한을 사용합니다.
+3. Cloudflare Workers Builds에서 이 저장소의 `main` 브랜치를 기존 운영 Worker에 연결하고 아래처럼 설정합니다. 다른 브랜치의 자동 배포는 끕니다. 다른 사용자는 자기 Cloudflare 계정과 자기 운영 자원의 값으로 구성합니다.
+
+   | 항목 | 값 |
+   | --- | --- |
+   | 루트 디렉터리 | 저장소 루트 |
+   | 빌드 환경변수 | `NODE_VERSION=24` |
+   | 의존성 설치 | 기본 자동 설치 `npm ci` |
+   | 빌드 명령 | `npm run typecheck && npm test` |
+   | 배포 명령 | `npm run deploy:existing` |
+   | 빌드 비밀 환경변수 | `VOTE_DEPLOY_CONFIG`에 `.deploy-existing.json`과 같은 JSON 전체 |
+
+   `deploy:existing`이 프론트를 빌드한 뒤 기존 설정으로 배포합니다. 환경변수가 로컬 파일보다 우선합니다. 실제 계정·DB ID·도메인·쿠키 이름을 공개 저장소에 커밋하지 마세요. Worker의 기존 `ADMIN_PASSWORD_HASH` secret은 빌드 JSON에 넣지 않으며 그대로 유지합니다. 배포 권한은 해당 Worker·리소스에 필요한 계정 권한을 사용합니다.
+
+연결 후 `main`에 푸시하면 Cloudflare가 자체 빌드 명령의 타입·테스트 검사를 통과한 커밋을 배포합니다. GitHub Actions의 기존 검사는 유지되며 Cloudflare와 각각 실행됩니다. 연결 설정과 해당 커밋의 Cloudflare 배포 성공을 확인한 뒤 자동 배포 완료로 판단합니다.
 
 공유 링크와 QR은 `PUBLIC_ORIGIN`의 `/`를 가리키며 별칭 호스트로 관리자 페이지를 열어도 같습니다. 경로·쿼리·프래그먼트는 참가 주소에 넣지 않습니다. 이 전용 앱은 BYOB 활동만 노출하며, 기존 DB의 다른 활동에 응답이나 진행 정보가 남아 있으면 공유 참가자 삭제와 전체 초기화를 차단합니다. 빈 대기 상태의 이전 활동은 정상 초기화를 막지 않습니다. 아카이브 수정·삭제에는 새 마이그레이션이 필요하지 않습니다.
 
