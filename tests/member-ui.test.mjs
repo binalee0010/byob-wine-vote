@@ -5,14 +5,14 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
 
 const require = createRequire(import.meta.url);
-const bundle = await build({ stdin: { contents: `export {default as MemberPortal, MemberSettings, MembershipRequests} from './MemberPortal'; export {api,apiPath,setMemberCsrfToken,setMemberWorkspaceSlug} from './api';`, resolveDir: fileURLToPath(new URL('../src', import.meta.url)), loader: 'tsx' }, bundle: true, write: false, format: 'esm', platform: 'browser', plugins: [{ name: 'member-test-hooks', setup(builder) {
+const bundle = await build({ stdin: { contents: `export {default as MemberPortal, PasswordReset, MemberSettings, MembershipRequests} from './MemberPortal'; export {api,apiPath,setMemberCsrfToken,setMemberWorkspaceSlug} from './api';`, resolveDir: fileURLToPath(new URL('../src', import.meta.url)), loader: 'tsx' }, bundle: true, write: false, format: 'esm', platform: 'browser', plugins: [{ name: 'member-test-hooks', setup(builder) {
   builder.onResolve({ filter: /^react$/ }, () => ({ path: 'hooks', namespace: 'test' }));
-  builder.onLoad({ filter: /^hooks$/, namespace: 'test' }, () => ({ contents: `export const useState=v=>globalThis.memberHooks.state(v);export const useRef=v=>globalThis.memberHooks.memo(()=>({current:v}),[]);export const useEffect=(fn,deps)=>globalThis.memberHooks.effect(fn,deps);export const useCallback=(fn,deps)=>globalThis.memberHooks.memo(()=>fn,deps);export const useId=()=>globalThis.memberHooks.memo(()=> 'member-settings',[]);` }));
+  builder.onLoad({ filter: /^hooks$/, namespace: 'test' }, () => ({ contents: `export const useState=v=>globalThis.memberHooks.state(v);export const useRef=v=>globalThis.memberHooks.memo(()=>({current:v}),[]);export const useEffect=(fn,deps)=>globalThis.memberHooks.effect(fn,deps);export const useLayoutEffect=useEffect;export const useCallback=(fn,deps)=>globalThis.memberHooks.memo(()=>fn,deps);export const useId=()=>globalThis.memberHooks.memo(()=> 'member-settings',[]);` }));
   builder.onResolve({ filter: /^\.\/Admin$/ }, () => ({ path: 'admin', namespace: 'test' }));
   builder.onLoad({ filter: /^admin$/, namespace: 'test' }, () => ({ contents: `export default function Admin(){return null} export function PasswordChange(){return null}` }));
   builder.onResolve({ filter: /^react\/jsx-runtime$/ }, ({ path }) => ({ path: pathToFileURL(require.resolve(path)).href, external: true }));
 } }] });
-const { MemberPortal, MemberSettings, MembershipRequests, api, apiPath, setMemberCsrfToken, setMemberWorkspaceSlug } = await import('data:text/javascript;base64,' + Buffer.from(bundle.outputFiles[0].text).toString('base64'));
+const { MemberPortal, PasswordReset, MemberSettings, MembershipRequests, api, apiPath, setMemberCsrfToken, setMemberWorkspaceSlug } = await import('data:text/javascript;base64,' + Buffer.from(bundle.outputFiles[0].text).toString('base64'));
 const uploadBundle = await build({ stdin: { contents: `export {default as Admin,sendPhoto} from './Admin';export {default as App} from './App';export {setMemberCsrfToken,setMemberWorkspaceSlug} from './api';`, resolveDir: fileURLToPath(new URL('../src', import.meta.url)), loader: 'tsx' }, bundle: true, write: false, format: 'esm', platform: 'browser', plugins: [{ name: 'legacy-test-hooks', setup(builder) {
   builder.onResolve({ filter: /^react$/ }, () => ({ path: 'hooks', namespace: 'test' }));
   builder.onLoad({ filter: /^hooks$/, namespace: 'test' }, () => ({ contents: `export const useState=v=>globalThis.memberHooks.state(v);export const useRef=v=>globalThis.memberHooks.memo(()=>({current:v}),[]);export const useEffect=(fn,deps)=>globalThis.memberHooks.effect(fn,deps);export const useLayoutEffect=useEffect;export const useCallback=(fn,deps)=>globalThis.memberHooks.memo(()=>fn,deps);export const useMemo=(fn,deps)=>globalThis.memberHooks.memo(fn,deps);export const useId=()=>globalThis.memberHooks.memo(()=> 'member-settings',[]);` }));
@@ -35,13 +35,78 @@ function mount(render) {
   return { render() { cursor = 0; globalThis.memberHooks = hooks; const tree = render(); pending.splice(0).forEach(run => run()); return tree; }, close() { slots.forEach(slot => slot.cleanup?.()); } };
 }
 function environment() {
-  const previous = { fetch: globalThis.fetch, window: globalThis.window, document: globalThis.document, location: globalThis.location, memberHooks: globalThis.memberHooks };
-  globalThis.window = { setTimeout, clearTimeout }; globalThis.document = { activeElement: null }; globalThis.location = { pathname: '/', origin: 'https://vote.example', replacements: [], replace(path) { this.replacements.push(path); } };
+  const previous = { fetch: globalThis.fetch, window: globalThis.window, document: globalThis.document, location: globalThis.location, history: globalThis.history, memberHooks: globalThis.memberHooks };
+  globalThis.window = { setTimeout, clearTimeout }; globalThis.document = { activeElement: null }; globalThis.location = { pathname: '/', search: '', hash: '', href: 'https://vote.example/', origin: 'https://vote.example', replacements: [], replace(path) { this.replacements.push(path); } };
+  globalThis.history = { state: null, replacements: [], replaceState(state, title, path) { this.replacements.push(path); } };
   setMemberCsrfToken(null);
   return () => { Object.assign(globalThis, previous); setMemberCsrfToken(null); };
 }
 const member = (status = 'approved', role = 'member') => ({ id: 'member-id', email: 'member@example.com', role, status, workspaceSlug: status === 'approved' ? 'member-space' : null });
 const session = (account = null) => ({ authenticated: !!account, csrfToken: account ? 'csrf-value' : null, member: account });
+
+test('login keeps only its title, credentials and account actions', async () => {
+  const restore = environment(); globalThis.fetch = async () => Response.json(session()); const app = mount(MemberPortal);
+  try {
+    const tree = app.render(); const text = JSON.stringify(tree);
+    assert.deepEqual(nodes(tree).filter(node => node.type === 'h2').map(node => node.props.children), ['로그인']);
+    assert.ok(button(tree, '가입 신청')); assert.ok(button(tree, '비밀번호 재설정'));
+    assert.ok(!text.includes('투표 운영자')); assert.ok(!text.includes('투표 참가자는')); assert.ok(!text.includes('나만의 투표'));
+  } finally { await settle(); app.close(); restore(); }
+});
+
+for (const source of ['fragment', 'query']) test(`reset link opens new password form and removes its ${source} token without fetching the session`, async () => {
+  const restore = environment(); const requests = [];
+  globalThis.location.search = source === 'query' ? '?reset=secret&keep=yes' : '?keep=yes';
+  globalThis.location.hash = source === 'fragment' ? '#reset=secret' : '';
+  globalThis.location.href = globalThis.location.origin + '/' + globalThis.location.search + globalThis.location.hash;
+  globalThis.fetch = async url => { requests.push(url); return Response.json(session(member())); };
+  const app = mount(MemberPortal);
+  try {
+    const tree = app.render(); await settle(); const reset = named(tree, 'PasswordReset');
+    assert.equal(reset.props.token, 'secret'); assert.deepEqual(globalThis.history.replacements, ['/?keep=yes']);
+    assert.deepEqual(requests, []); assert.equal(named(tree, 'Admin'), undefined);
+    reset.props.onComplete(); const login = app.render(); assert.ok(button(login, '로그인'));
+    assert.ok(JSON.stringify(login).includes('새 비밀번호로 로그인해 주세요.'));
+  } finally { await settle(); app.close(); restore(); }
+});
+
+test('reset request prevents duplicate sends, preserves failed email and reports a generic result', async () => {
+  const restore = environment(); const requests = []; let fail = true; let backs = 0;
+  globalThis.fetch = async (url, init) => { requests.push([url, init]); return fail ? Response.json({ error: '잠시 후 다시 시도해 주세요.', code: 'mail_unavailable' }, { status: 503 }) : Response.json({ ok: true }); };
+  const app = mount(() => PasswordReset({ token: null, onBack: () => { backs++; }, onRequestAgain() {}, onComplete() { assert.fail('request must not finish a reset'); } }));
+  try {
+    let tree = app.render(); const input = nodes(tree).find(node => node.type === 'input'); assert.equal(input.props.autoFocus, true);
+    input.props.onChange({ target: { value: 'member@example.com' } }); tree = app.render();
+    const submit = nodes(tree).find(node => node.type === 'form').props.onSubmit;
+    const first = submit({ preventDefault }); submit({ preventDefault });
+    assert.equal(button(app.render(), '로그인으로 돌아가기').props.disabled, true); await first; tree = app.render();
+    assert.equal(requests.length, 1); assert.equal(nodes(tree).find(node => node.type === 'input').props.value, 'member@example.com');
+    assert.ok(JSON.stringify(tree).includes('잠시 후 다시 시도해 주세요.'));
+    fail = false; await nodes(tree).find(node => node.type === 'form').props.onSubmit({ preventDefault }); tree = app.render();
+    assert.equal(requests.at(-1)[0], '/api/members/password-reset/request'); assert.deepEqual(JSON.parse(requests.at(-1)[1].body), { email: 'member@example.com' });
+    assert.ok(JSON.stringify(tree).includes('가입한 이메일이면')); assert.equal(nodes(tree).filter(node => node.type === 'form').length, 0);
+    button(tree, '다시 요청').props.onClick(); tree = app.render();
+    assert.equal(nodes(tree).find(node => node.type === 'input').props.value, 'member@example.com');
+    button(tree, '로그인으로 돌아가기').props.onClick(); assert.equal(backs, 1);
+  } finally { app.close(); restore(); }
+});
+
+for (const invalid of [false, true]) test(`new password reset ${invalid ? 'offers a fresh link for expired or used tokens' : 'submits once and completes without automatic login'}`, async () => {
+  const restore = environment(); const requests = []; let completed = 0; let requestedAgain = 0;
+  globalThis.fetch = async (url, init) => { requests.push([url, init]); return invalid ? Response.json({ error: '잘못된 링크', code: 'invalid_reset_token' }, { status: 400 }) : Response.json({ ok: true }); };
+  const app = mount(() => PasswordReset({ token: 'single-use-token', onBack() {}, onRequestAgain() { requestedAgain++; }, onComplete() { completed++; } }));
+  try {
+    let tree = app.render(); const input = nodes(tree).find(node => node.type === 'input');
+    assert.equal(input.props.minLength, 10); assert.equal(input.props.autoComplete, 'new-password'); assert.equal(input.props.autoFocus, true);
+    assert.equal(button(tree, '비밀번호 변경').props.disabled, true);
+    input.props.onChange({ target: { value: 'new-valid-password' } }); tree = app.render();
+    const submit = nodes(tree).find(node => node.type === 'form').props.onSubmit; const first = submit({ preventDefault }); submit({ preventDefault }); await first; tree = app.render();
+    assert.equal(requests.length, 1); assert.equal(requests[0][0], '/api/members/password-reset/confirm');
+    assert.deepEqual(JSON.parse(requests[0][1].body), { token: 'single-use-token', newPassword: 'new-valid-password' });
+    assert.equal(completed, invalid ? 0 : 1); assert.equal(nodes(tree).find(node => node.type === 'input')?.props.value ?? '', '');
+    if (invalid) { assert.ok(JSON.stringify(tree).includes('만료되었거나 이미 사용되었습니다')); button(tree, '새 재설정 메일 받기').props.onClick(); assert.equal(requestedAgain, 1); }
+  } finally { app.close(); restore(); }
+});
 
 test('tenant participant requests and member mutations use separate paths and CSRF boundaries', async () => {
   const restore = environment(); const requests = [];
@@ -108,7 +173,7 @@ for (const status of ['pending', 'approved']) test(`late initial session cannot 
   const onStandalone = () => { fallbacks++; };
   const app = mount(() => MemberPortal({ onStandalone }));
   try {
-    let tree = app.render(); if (status === 'pending') { button(tree, '운영자 가입 신청').props.onClick(); tree = app.render(); }
+    let tree = app.render(); if (status === 'pending') { button(tree, '가입 신청').props.onClick(); tree = app.render(); }
     nodes(tree).find(node => node.type === 'input' && node.props.name === 'email').props.onChange({ target: { value: 'member@example.com' } });
     nodes(tree).find(node => node.type === 'input' && node.props.name === 'password').props.onChange({ target: { value: 'valid-password' } });
     tree = app.render(); nodes(tree).find(node => node.type === 'form').props.onSubmit({ preventDefault }); await settle();
@@ -132,6 +197,9 @@ test('standalone admin retains password login, management, password change and l
   const app = mount(legacyApi.Admin);
   try {
     app.render(); await settle(); let tree = app.render(); assert.ok(button(tree, '로그인'));
+    assert.equal(globalThis.document.title, 'BYOB 와인 투표 · 투표 관리');
+    assert.ok(nodes(tree).some(node => node.type === 'h1' && node.props.children === '투표 관리'));
+    const header = named(tree, 'AdminHeader'); assert.ok(nodes(header.type(header.props)).some(node => node.type === 'span' && node.props.children === '투표 관리'));
     nodes(tree).find(node => node.type === 'input').props.onChange({ target: { value: 'legacy-password' } }); tree = app.render();
     nodes(tree).find(node => node.type === 'form').props.onSubmit({ preventDefault }); await settle(); tree = app.render();
     assert.ok(named(tree, 'Progress')); assert.equal(named(tree, 'AdminHeader').props.participantUrl, 'https://vote.example/');
@@ -147,7 +215,7 @@ test('signup submits once, preserves failed input, then shows pending approval w
   globalThis.fetch = async (url, init) => { requests.push([url, init]); if (init.method === 'GET') return Response.json(session()); return fail ? Response.json({ error: '일시적 연결 오류' }, { status: 503 }) : Response.json(session(member('pending'))); };
   const app = mount(MemberPortal);
   try {
-    app.render(); await settle(); let tree = app.render(); button(tree, '운영자 가입 신청').props.onClick(); tree = app.render();
+    app.render(); await settle(); let tree = app.render(); button(tree, '가입 신청').props.onClick(); tree = app.render();
     nodes(tree).find(node => node.type === 'input' && node.props.name === 'email').props.onChange({ target: { value: 'member@example.com' } });
     nodes(tree).find(node => node.type === 'input' && node.props.name === 'password').props.onChange({ target: { value: 'valid-password' } });
     tree = app.render(); const submit = nodes(tree).find(node => node.type === 'form').props.onSubmit;
@@ -170,7 +238,9 @@ test('approved member enters own admin, settings hides approvals from ordinary m
     admin.props.onSettings(); tree = app.render(); const props = named(tree, 'MemberSettings').props;
     settings = mount(() => MemberSettings(props)); const settingsTree = settings.render();
     assert.equal(named(settingsTree, 'MembershipRequests'), undefined); assert.ok(named(settingsTree, 'PasswordChange')); assert.ok(button(settingsTree, '로그아웃'));
-    settings.close(); settings = mount(() => MemberSettings({ ...props, member: member('approved', 'owner') })); assert.ok(named(settings.render(), 'MembershipRequests'));
+    assert.ok(nodes(settingsTree).some(node => node.type === 'small' && node.props.children === '회원'));
+    settings.close(); settings = mount(() => MemberSettings({ ...props, member: member('approved', 'owner') })); const ownerSettings = settings.render(); assert.ok(named(ownerSettings, 'MembershipRequests'));
+    assert.ok(nodes(ownerSettings).some(node => node.type === 'small' && node.props.children === '관리자'));
   } finally { settings?.close(); app.close(); restore(); }
 });
 
@@ -222,9 +292,9 @@ test('logout returns to the root login and clears the previous vote title', asyn
   const restore = environment(); globalThis.location.pathname = '/admin'; globalThis.fetch = async (url, init) => Response.json(init.method === 'GET' ? session(member()) : { ok: true }); const app = mount(MemberPortal);
   try {
     app.render(); await settle(); let tree = app.render(); named(tree, 'Admin').props.onSettings(); tree = app.render();
-    globalThis.document.title = 'Previous event · 관리자';
+    globalThis.document.title = 'Previous event · 투표 관리';
     await named(tree, 'MemberSettings').props.onLogout();
-    assert.deepEqual(globalThis.location.replacements, ['/']); assert.equal(globalThis.document.title, 'BYOB 와인 투표 · 운영자 로그인');
+    assert.deepEqual(globalThis.location.replacements, ['/']); assert.equal(globalThis.document.title, 'BYOB 와인 투표 · 로그인');
   } finally { app.close(); restore(); }
 });
 

@@ -5,13 +5,15 @@ import type { SMTPTransportOptions } from 'nodemailer/lib/smtp-transport';
 type MailEnv = { DB: D1Database; PUBLIC_ORIGIN?: string; SUPERADMIN_EMAIL?: string; SMTP_CONFIG?: string };
 type Notice = { member_id: string; email: string; attempts: number };
 
-async function sendNotice(env: MailEnv, notice: Notice) {
-  const recipient = env.SUPERADMIN_EMAIL?.trim();
+export function mailConfiguration(env: MailEnv) {
   const origin = new URL(env.PUBLIC_ORIGIN ?? '');
-  if (origin.protocol !== 'https:' || !recipient || /[\r\n,;]/.test(recipient)) throw new Error('Invalid mail configuration');
+  if (origin.protocol !== 'https:' || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash) throw new Error('Invalid mail configuration');
   const smtp = JSON.parse(env.SMTP_CONFIG ?? '{}');
-  if (smtp.secure !== true || !smtp.host || !Number.isInteger(smtp.port) || !smtp.user || !smtp.pass || !smtp.from) throw new Error('TLS mail configuration required');
-  const mailer = createTransport({
+  if (!smtp || smtp.secure !== true || typeof smtp.host !== 'string' || !smtp.host || /\s/.test(smtp.host) || !Number.isInteger(smtp.port) || smtp.port < 1 || smtp.port > 65535 || typeof smtp.user !== 'string' || !smtp.user || typeof smtp.pass !== 'string' || !smtp.pass || typeof smtp.from !== 'string' || !smtp.from || /[\r\n]/.test(smtp.from)) throw new Error('TLS mail configuration required');
+  return { origin, smtp };
+}
+function transport(smtp: ReturnType<typeof mailConfiguration>['smtp']) {
+  return createTransport({
     host: smtp.host, port: smtp.port, secure: true, auth: { user: smtp.user, pass: smtp.pass },
     connectionTimeout: 10000, greetingTimeout: 10000, socketTimeout: 20000, disableFileAccess: true, disableUrlAccess: true,
     // Connect by hostname so Workers preserves the provider's TLS server name.
@@ -31,11 +33,27 @@ async function sendNotice(env: MailEnv, notice: Notice) {
       socket.once('error', finish).once('close', closed).once('secureConnect', ready);
     }
   } satisfies SMTPTransportOptions);
+}
+async function sendNotice(env: MailEnv, notice: Notice) {
+  const recipient = env.SUPERADMIN_EMAIL?.trim();
+  if (!recipient || /[\r\n,;]/.test(recipient)) throw new Error('Invalid mail configuration');
+  const { origin, smtp } = mailConfiguration(env), mailer = transport(smtp);
   try {
     const result = await mailer.sendMail({
-      from: smtp.from, to: recipient, subject: 'BYOB 운영자 가입 승인 요청',
+      from: smtp.from, to: recipient, subject: 'BYOB 회원 가입 승인 요청',
       messageId: `<byob-signup-${notice.member_id}@${origin.hostname}>`,
-      text: `${notice.email} 님이 BYOB 투표 운영자 가입을 신청했습니다.\n\n아래 링크로 로그인한 뒤 가입 승인 메뉴에서 신청을 확인해 주세요.\n${new URL('/admin?settings=approvals', origin).href}`
+      text: `${notice.email} 님이 BYOB 회원 가입을 신청했습니다.\n\n아래 링크로 로그인한 뒤 가입 승인 메뉴에서 신청을 확인해 주세요.\n${new URL('/admin?settings=approvals', origin).href}`
+    });
+    if (result.accepted.length !== 1 || result.rejected.length) throw new Error('Mail was not accepted');
+  } finally { mailer.close(); }
+}
+
+export async function sendPasswordReset(env: MailEnv, notice: { email: string; token: string }) {
+  const { origin, smtp } = mailConfiguration(env), mailer = transport(smtp);
+  try {
+    const result = await mailer.sendMail({
+      from: smtp.from, to: notice.email, subject: 'BYOB 비밀번호 재설정',
+      text: `아래 링크에서 새 비밀번호를 설정해 주세요. 이 링크는 30분 동안 한 번만 사용할 수 있습니다.\n${new URL('/#reset=' + notice.token, origin).href}\n\n요청하지 않았다면 이 메일을 무시해 주세요.`
     });
     if (result.accepted.length !== 1 || result.rejected.length) throw new Error('Mail was not accepted');
   } finally { mailer.close(); }

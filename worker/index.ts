@@ -1050,7 +1050,7 @@ export default {
     catch (error) { response = errorResponse(error); }
     const headers = new Headers(response.headers);
     headers.set('X-Content-Type-Options', 'nosniff');
-    headers.set('Referrer-Policy', 'same-origin');
+    headers.set('Referrer-Policy', 'no-referrer');
     headers.set('X-Frame-Options', 'DENY');
     headers.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
     headers.set('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");

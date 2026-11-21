@@ -147,7 +147,7 @@ function ParticipantApp() {
         <input id="participant-name" autoComplete="name" maxLength={80} required value={name} onChange={e => setName(e.target.value)} placeholder={restricted ? '등록된 이름' : '이름'}/>
         <button className="primary" disabled={busy || !name.trim()}>{busy ? '확인 중…' : '참여하기'}</button>
       </div>
-      <small>{restricted ? '명단에 이름이 없으면 관리자에게 문의해 주세요.' : '동명이인은 서로 다른 이름을 입력해 주세요.'}</small>
+      <small>{restricted ? '명단에 이름이 없으면 모임 담당자에게 문의해 주세요.' : '동명이인은 서로 다른 이름을 입력해 주세요.'}</small>
       {changingName && <button type="button" className="text-button" onClick={() => setChangingName(false)}>취소</button>}
     </form></section>
         : <section className="identity-bar"><div><strong>{data.participant.name}</strong> 님</div><div className="row"><button className="text-button" onClick={() => { setChangingName(true); setNotice(''); }}>이름 변경</button><button className="text-button" disabled={busy} onClick={logout}>로그아웃</button></div></section>;

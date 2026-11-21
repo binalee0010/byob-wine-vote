@@ -2,6 +2,7 @@ import type { Env } from './index';
 import { legacyAdminCredential, memberAdminSession, revokeWorkspaceAdmin, revokeWorkspaceAdmins } from './index';
 import { ensureWorkspace, type Workspace } from './workspaces';
 import { retryPendingNotices } from './signup-mail';
+import { confirmPasswordReset, PasswordResetError, requestPasswordReset } from './password-reset';
 
 type MemberRow = { id:string; email:string; role:'owner'|'member'; status:'pending'|'approved'|'rejected'; workspace_slug:string; namespace:string|null; password_hash:string|null; credential_version:string|null; created_at:number; reviewed_at:number|null };
 export type MemberSession = { id:string; email:string; role:MemberRow['role']; status:MemberRow['status']; workspaceSlug:string; namespace:string|null; csrfToken:string; tokenHash:string; credentialVersion:string };
@@ -158,6 +159,20 @@ export async function handleMemberRequest(request:Request,env:Env,ctx?:Execution
     if(method!=='GET')sameOrigin(request);
     if(path==='/api/members/signup' && method==='POST')return await signup(request,env,ctx);
     if(path==='/api/members/login' && method==='POST')return await login(request,env);
+    if(path==='/api/members/password-reset/request' && method==='POST') {
+      ownerEmail(env);await rateLimit(request,env,'reset-request-ip',10);
+      const data=await body(request),address=email(data.email);
+      await rateLimit(request,env,'reset-request-email',3,address);
+      await requestPasswordReset(env,address);
+      return json({ok:true});
+    }
+    if(path==='/api/members/password-reset/confirm' && method==='POST') {
+      ownerEmail(env);await rateLimit(request,env,'reset-confirm-ip',12);
+      const data=await body(request),next=password(data.newPassword,true);
+      const target=await confirmPasswordReset(env,data.token,next);
+      await revokeWorkspaceAdmins(env,{slug:target.workspaceSlug,namespace:target.namespace});
+      return json({ok:true});
+    }
     if(path==='/api/members/session' && method==='GET') {
       const member=await getMemberSession(request,env),headers=new Headers();
       if(member?.status==='approved')headers.append('Set-Cookie',await memberAdminSession(request,env,workspace(member)));
@@ -171,7 +186,7 @@ export async function handleMemberRequest(request:Request,env:Env,ctx?:Execution
       return new Response(JSON.stringify({ok:true}),{headers:new Headers([...headers,['Content-Type','application/json'],['Cache-Control','no-store']])});
     }
     if(path==='/api/members/password' && method==='POST')return await changePassword(request,env,member);
-    if(member.role!=='owner' || member.status!=='approved')fail(403,'최고 관리자 권한이 필요합니다.','forbidden');
+    if(member.role!=='owner' || member.status!=='approved')fail(403,'가입 승인에는 관리자 권한이 필요합니다.','forbidden');
     if(path==='/api/members/requests' && method==='GET') {
       const result=await env.DB.prepare("SELECT id,email,status,created_at,reviewed_at FROM members WHERE role='member' ORDER BY CASE status WHEN 'pending' THEN 0 ELSE 1 END,created_at DESC LIMIT 500").all<Pick<MemberRow,'id'|'email'|'status'|'created_at'|'reviewed_at'>>();
       return json({requests:result.results.map(row=>({id:row.id,email:row.email,status:row.status,createdAt:new Date(row.created_at).toISOString(),reviewedAt:row.reviewed_at===null?null:new Date(row.reviewed_at).toISOString()}))});
@@ -180,7 +195,7 @@ export async function handleMemberRequest(request:Request,env:Env,ctx?:Execution
     if(match && method==='POST')return await review(request,env,member,match[1],match[2]==='approve'?'approved':'rejected');
     return json({error:'요청을 찾을 수 없습니다.',code:'not_found'},404);
   } catch(error) {
-    if(error instanceof MemberError)return json({error:error.message,code:error.code},error.status);
+    if(error instanceof MemberError || error instanceof PasswordResetError)return json({error:error.message,code:error.code},error.status);
     throw error;
   }
 }

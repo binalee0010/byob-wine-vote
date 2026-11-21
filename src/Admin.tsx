@@ -26,7 +26,7 @@ function ServerTextInput({ serverValue, ...props }: {
 export default function Admin({ member, onSettings, onSessionEnded }: { member?: Member; onSettings?: () => void; onSessionEnded?: () => void } = {}) {
     const [state, setState] = useState<AdminState | null>(null);
     const eventTitle = state?.event.title;
-    useEffect(() => { document.title = `${eventTitle || siteTitle} · 관리자`; }, [eventTitle]);
+    useEffect(() => { document.title = `${eventTitle || siteTitle} · 투표 관리`; }, [eventTitle]);
     const [tab, setTab] = useState(0);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState('');
@@ -126,7 +126,7 @@ export default function Admin({ member, onSettings, onSessionEnded }: { member?:
         finally { passwordChanging.current = false; setBusy(false); }
     };
     const participantUrl = state?.participantUrl ?? new URL(member ? '/v/' + encodeURIComponent(member.workspaceSlug || '') : '/', location.origin).href;
-    return <div className="admin-shell"><AdminHeader title={siteTitle} participantUrl={participantUrl} onSettings={onSettings} onLogout={!member && state ? () => { void legacyLogout(); } : undefined} busy={busy || uploadBusy}/><main><div className="section-heading"><h1>{member ? '내 투표 관리' : '투표 관리'}</h1></div><Notice error>{connectionError}</Notice><Notice error>{error}</Notice><Notice>{message}</Notice>{!state && !member && !legacyChecking
+    return <div className="admin-shell"><AdminHeader title={siteTitle} participantUrl={participantUrl} onSettings={onSettings} onLogout={!member && state ? () => { void legacyLogout(); } : undefined} busy={busy || uploadBusy}/><main><div className="section-heading"><h1>투표 관리</h1></div><Notice error>{connectionError}</Notice><Notice error>{error}</Notice><Notice>{message}</Notice>{!state && !member && !legacyChecking
             ? <section className="panel login-panel"><h2>관리자 로그인</h2><form onSubmit={legacyLogin}><label>비밀번호<input ref={loginInput} type="password" autoComplete="current-password" maxLength={1024} required value={password} onChange={event => setPassword(event.target.value)}/></label><button className="primary" disabled={busy || !password}>{busy ? '확인 중…' : '로그인'}</button></form></section>
             : !state
             ? connectionError ? <button type="button" onClick={() => { setConnectionError(''); void refresh(); }}>다시 불러오기</button> : <p role="status">내 투표를 불러오고 있습니다…</p>
@@ -236,7 +236,7 @@ export function Progress({ state, action, busy, changePassword, onResetAll }: {
       <p className="muted">현재 참가자, 와인과 응답을 삭제하고 투표를 대기로 되돌립니다. 지난 투표 기록은 유지됩니다.</p>
       <DestructiveAction label="전체 초기화" action={resetAll} busy={busy} request={{
                 title: '현재 투표를 전체 초기화할까요?',
-                description: `현재 참가자 ${state.participants.length}명과 참가자 세션, 와인 ${state.candidates?.length ?? 0}병과 사진, 투표 ${responseCount}건을 삭제합니다. 저장하지 않은 결과는 삭제됩니다. 투표 제목·방식·배점, 관리자 비밀번호와 세션, 지난 투표 기록과 기록에 저장된 사진은 유지됩니다.`,
+                description: `현재 참가자 ${state.participants.length}명과 참가자 세션, 와인 ${state.candidates?.length ?? 0}병과 사진, 투표 ${responseCount}건을 삭제합니다. 저장하지 않은 결과는 삭제됩니다. 투표 제목·방식·배점, 계정 비밀번호와 세션, 지난 투표 기록과 기록에 저장된 사진은 유지됩니다.`,
                 path: '/admin/reset-all', method: 'POST', body: { confirm: 'reset-all', expectedRevision: expectedRevisions.byob, expectedRosterRevision: state.rosterRevision },
                 phrase: '전체 초기화', success: result => photoCleanupPending(result)
                     ? '현재 투표를 초기화했습니다. 와인 등록 화면에서 남은 사진을 정리할 수 있습니다.'
@@ -278,7 +278,7 @@ export function PasswordChange({ busy, onChangePassword }: {
             setPending(false);
         }
     }
-    return <details className="panel full-width password-settings"><summary>관리자 비밀번호 변경</summary><p className="muted">변경하면 내 계정의 모든 세션이 종료됩니다. 새 비밀번호로 다시 로그인해 주세요.</p><form onSubmit={submit}><fieldset className="password-fields" disabled={busy || pending}><label>현재 비밀번호<input name="currentPassword" type="password" autoComplete="current-password" maxLength={1024} required value={current} onChange={e => setCurrent(e.target.value)}/></label><label>새 비밀번호<input name="newPassword" type="password" autoComplete="new-password" minLength={10} maxLength={1024} required value={next} onChange={e => setNext(e.target.value)}/><small>10자 이상 1,024자 이하</small></label><label>새 비밀번호 확인<input name="confirmPassword" type="password" autoComplete="new-password" minLength={10} maxLength={1024} required value={confirmation} onChange={e => setConfirmation(e.target.value)}/></label><button className="primary">{pending ? '변경 중…' : '비밀번호 변경'}</button></fieldset><Notice error>{error}</Notice></form></details>;
+    return <details className="panel full-width password-settings"><summary>비밀번호 변경</summary><p className="muted">변경하면 내 계정의 모든 세션이 종료됩니다. 새 비밀번호로 다시 로그인해 주세요.</p><form onSubmit={submit}><fieldset className="password-fields" disabled={busy || pending}><label>현재 비밀번호<input name="currentPassword" type="password" autoComplete="current-password" maxLength={1024} required value={current} onChange={e => setCurrent(e.target.value)}/></label><label>새 비밀번호<input name="newPassword" type="password" autoComplete="new-password" minLength={10} maxLength={1024} required value={next} onChange={e => setNext(e.target.value)}/><small>10자 이상 1,024자 이하</small></label><label>새 비밀번호 확인<input name="confirmPassword" type="password" autoComplete="new-password" minLength={10} maxLength={1024} required value={confirmation} onChange={e => setConfirmation(e.target.value)}/></label><button className="primary">{pending ? '변경 중…' : '비밀번호 변경'}</button></fieldset><Notice error>{error}</Notice></form></details>;
 }
 export function VotingMethodSetting({ activity, busy, field }: {
     activity: Activity;
@@ -336,7 +336,7 @@ function ActivityControl({ activity, count, total, action, busy, field, startBlo
                 ? activity.status === 'closed'
                     ? activity.published ? '참가자에게 결과가 공개되어 있습니다.' : '저장하면 참가자가 결과를 볼 수 있습니다.'
                     : visibilityChanged ? '저장한 뒤 마감하면 참가자에게 결과가 자동으로 공개됩니다.' : '마감하면 참가자에게 결과가 자동으로 공개됩니다.'
-                : '관리자만 결과를 확인할 수 있습니다.'}
+                : '모임 담당자만 결과를 확인할 수 있습니다.'}
           {activity.status === 'open' && visibilityChanged && ' 결과 공개 설정을 저장한 뒤 마감할 수 있습니다.'}
           {(resultsLocked || visibility.value === 'public') && (' 기록에 저장했거나 결과를 공개한 투표는 다시 시작할 수 없습니다.')}
         </small>
@@ -667,7 +667,7 @@ export function RankedResponses({ state, action, busy }: {
         });
     }
     return <section className="panel">
-    <div className="section-heading"><h2>{activity.title}</h2><span>{statusText[activity.status]} · {activity.published ? '결과 공개됨' : '결과 비공개 (관리자만)'}</span></div>
+    <div className="section-heading"><h2>{activity.title}</h2><span>{statusText[activity.status]} · {activity.published ? '결과 공개됨' : '결과 비공개 (모임 담당자만)'}</span></div>
     <p className="muted">투표 {state.answers.byob.length}건 · {activity.votingMethod === 'winner' ? '득표수가' : '총점이'} 같으면 공동 순위입니다.</p>
     {rows.length ? <RankedResultList rows={rows} onPhoto={setPhoto} method={activity.votingMethod}/> : <p className="muted">아직 등록된 와인이 없습니다.</p>}
     <div className="activity-reset">

@@ -23,14 +23,15 @@ npm run dev
 
 비밀번호 설정 명령은 터미널에서 새 관리자 비밀번호를 두 번 묻습니다. 10자 이상으로 입력하세요. 입력한 문자는 화면에 표시되지 않습니다. 해시만 로컬 `.dev.vars`에 저장하며 이미 파일이 있으면 덮어쓰지 않습니다. 처음 한 번 설정하면 이후에는 `npm run dev`로 다시 열 수 있습니다.
 
-회원제를 시험하려면 비밀번호 설정 후 로컬 `.dev.vars`에 `SUPERADMIN_EMAIL=owner@example.test`를 추가하고 다시 실행하세요. [운영자 로그인](http://localhost:8787/admin)에서 이 주소와 방금 정한 비밀번호로 접속합니다. 운영자 회원제가 설정되지 않은 단독 설치에서는 `/`가 기존 참가자 화면입니다. 로컬 데이터와 사진은 Wrangler가 `.wrangler/`에 보관합니다.
+회원제를 시험하려면 비밀번호 설정 후 로컬 `.dev.vars`에 `SUPERADMIN_EMAIL=owner@example.test`를 추가하고 다시 실행하세요. [로그인](http://localhost:8787/admin)에서 이 주소와 방금 정한 비밀번호로 접속합니다. 회원제가 설정되지 않은 단독 설치에서는 `/`가 기존 참가자 화면입니다. 로컬 데이터와 사진은 Wrangler가 `.wrangler/`에 보관합니다.
 
-## 운영자 가입과 참가 링크
+## 회원 가입과 참가 링크
 
-1. 운영자는 `/` 또는 `/admin`에서 이메일과 비밀번호로 가입을 신청합니다. 슈퍼 관리자에게 신청 알림이 발송됩니다.
-2. 슈퍼 관리자는 오른쪽 위 **설정 → 가입 승인**에서 승인하거나 거절합니다. 대기 중인 운영자는 **승인 상태 확인**을 눌러 자기 관리 화면을 엽니다. 이후 같은 이메일과 비밀번호로 접속할 수 있습니다.
-3. 승인받은 운영자마다 독립된 투표와 참가 링크 `/v/<고유주소>`가 생깁니다. 관리 화면의 링크나 QR을 공유하세요. 참가자는 받은 주소에 접속하여 이름으로 참여합니다. 운영자의 비밀번호 변경과 로그아웃은 오른쪽 위 설정에서 할 수 있습니다.
-4. 슈퍼 관리자에게는 `/v/owner`가 배정됩니다. 기존 설치를 전환하면 이 주소에서 종전 투표가 이어집니다.
+1. 회원은 `/` 또는 `/admin`에서 이메일과 비밀번호로 가입을 신청합니다. 관리자에게 신청 알림이 발송됩니다.
+2. 관리자는 오른쪽 위 **설정 → 가입 승인**에서 승인하거나 거절합니다. 가입을 신청한 회원은 **승인 상태 확인**을 눌러 자기 관리 화면을 엽니다. 이후 같은 이메일과 비밀번호로 접속할 수 있습니다.
+3. 승인받은 회원마다 독립된 투표와 참가 링크 `/v/<고유주소>`가 생깁니다. 관리 화면의 링크나 QR을 공유하세요. 참가자는 받은 주소에 접속하여 이름으로 참여합니다. 회원의 비밀번호 변경과 로그아웃은 오른쪽 위 설정에서 할 수 있습니다.
+4. 로그인 화면의 **비밀번호 재설정**에서 가입한 이메일을 입력합니다. 메일 링크는 30분 동안 한 번만 사용할 수 있습니다. 새 비밀번호를 설정하면 해당 회원은 다시 로그인해야 합니다.
+5. 관리자에게는 `/v/owner`가 배정됩니다. 기존 설치를 전환하면 이 주소에서 종전 투표가 이어집니다.
 
 ## 투표 운영
 
@@ -72,14 +73,14 @@ Worker가 화면과 API를 제공합니다. D1에는 투표와 참가자 데이�
 
    첫 번째 값은 기존 관리자 비밀번호로 로그인할 유일한 이메일입니다. 두 번째 값은 인증된 발신 계정의 TLS SMTP 설정 JSON입니다. 예시는 `{"host":"smtp.example.com","port":465,"secure":true,"user":"mailer@example.com","pass":"SMTP_APP_PASSWORD","from":"mailer@example.com"}`입니다. 운영 주소와 실제 자격증명은 서버 설정에만 입력하세요. 신청 알림은 가입 직후 전송하며 실패한 건은 10분마다 확인해 재시도합니다.
 
-GitHub Actions는 푸시와 PR에서 자동 검사만 수행합니다. 위 배포 명령은 본인의 Cloudflare 계정에서 실행하세요. Cloudflare Workers Builds로 자동 배포하려면 자기 저장소의 운영 브랜치만 연결하고, 저장소 루트에서 `NODE_VERSION=24`, 기본 자동 의존성 설치 `npm ci`, 빌드 명령 `npm run typecheck && npm test`, 배포 명령 `npm run deploy`를 지정합니다. `deploy`가 프론트를 빌드합니다. 기존 운영 Worker를 갱신하는 운영자는 아래의 `deploy:existing` 설정을 사용하세요. 로컬 비밀 파일과 Wrangler 상태는 Git에서 제외됩니다.
+GitHub Actions는 푸시와 PR에서 자동 검사만 수행합니다. 위 배포 명령은 본인의 Cloudflare 계정에서 실행하세요. Cloudflare Workers Builds로 자동 배포하려면 자기 저장소의 운영 브랜치만 연결하고, 저장소 루트에서 `NODE_VERSION=24`, 기본 자동 의존성 설치 `npm ci`, 빌드 명령 `npm run typecheck && npm test`, 배포 명령 `npm run deploy`를 지정합니다. `deploy`가 프론트를 빌드합니다. 기존 운영 Worker를 갱신할 때는 아래의 `deploy:existing` 설정을 사용하세요. 로컬 비밀 파일과 Wrangler 상태는 Git에서 제외됩니다.
 
 ## 기존 운영 Worker를 회원제로 전환
 
 이미 12개 마이그레이션을 적용해 운영하던 투표 DB는 그대로 연결할 수 있습니다. **기존 DB에 새 설치용 `migrations/0001_initial.sql`을 적용하지 마세요.** 기존 Worker 이름, 계정, D1·R2, `PasswordVerifier` 클래스와 관리자 비밀 `ADMIN_PASSWORD_HASH`를 유지해야 합니다. 기존 비밀번호를 새로 설정하거나 기존 DB를 새 DB로 바꾸지 마세요. 관리자 자격증명 버전·비밀번호 변경 이력과 참가자/관리자 세션은 기존 저장 형식을 그대로 사용합니다.
 
 1. [deploy-existing.example.json](deploy-existing.example.json)을 저장소 루트의 `.deploy-existing.json`으로 복사하고 모든 자리표시자를 기존 운영 값으로 바꿉니다. 이 비공개 파일은 Git에서 제외됩니다. `adminSessionCookie`와 `participantSessionCookie`에는 기존의 정확한 `__Host-` 쿠키 이름을 넣습니다. 값이 달라지면 기존 로그인은 인식되지 않습니다. `publicOrigin`은 정식 참가자 HTTPS origin, `routes`에는 그 호스트와 유지할 기존 별칭 호스트를 넣습니다.
-2. 기존 Worker의 **Settings → Variables and Secrets**에 위 두 Secret을 추가합니다. D1 복구 지점을 확보한 뒤 `npm run deploy:existing:check`, `node scripts/deploy-existing.mjs --migrate` 순서로 실행합니다. 기존 12개 이력에 회원용 `0013_members.sql`을 한 번 추가합니다. 이후 자동 배포는 코드를 갱신합니다. 직접 배포하는 환경에서는 `npm run deploy:existing`을 실행합니다.
+2. 기존 Worker의 **Settings → Variables and Secrets**에 위 두 Secret을 추가합니다. D1 복구 지점을 확보한 뒤 `npm run deploy:existing:check`, `node scripts/deploy-existing.mjs --migrate` 순서로 실행합니다. 기존 12개 이력에 회원용 `0013_members.sql`과 비밀번호 재설정용 `0014_password_reset.sql`을 순서대로 적용합니다. 이미 적용한 마이그레이션은 건너뜁니다. 이후 자동 배포는 코드를 갱신합니다. 직접 배포하는 환경에서는 `npm run deploy:existing`을 실행합니다.
 3. Cloudflare Workers Builds에서 이 저장소의 `main` 브랜치를 기존 운영 Worker에 연결하고 아래처럼 설정합니다. 다른 브랜치의 자동 배포는 끕니다. 다른 사용자는 자기 Cloudflare 계정과 자기 운영 자원의 값으로 구성합니다.
 
    | 항목 | 값 |
@@ -95,7 +96,7 @@ GitHub Actions는 푸시와 PR에서 자동 검사만 수행합니다. 위 배�
 
 연결 후 `main`에 푸시하면 Cloudflare가 자체 빌드 명령의 타입·테스트 검사를 통과한 커밋을 배포합니다. GitHub Actions의 기존 검사는 유지되며 Cloudflare와 각각 실행됩니다. 연결 설정과 해당 커밋의 Cloudflare 배포 성공을 확인한 뒤 자동 배포 완료로 판단합니다.
 
-공유 링크와 QR은 정식 `PUBLIC_ORIGIN`과 해당 운영자의 참가 경로를 사용합니다. 운영자별 투표·사진·집계·지난 기록이 분리되고, 전체 초기화는 현재 운영자의 투표에만 적용됩니다. 기존 DB에 다른 활동 응답이 남아 있으면 공유 참가자 삭제와 전체 초기화를 차단합니다.
+공유 링크와 QR은 정식 `PUBLIC_ORIGIN`과 해당 회원의 참가 경로를 사용합니다. 회원별 투표·사진·집계·지난 기록이 분리되고, 전체 초기화는 현재 회원의 투표에만 적용됩니다. 기존 DB에 다른 활동 응답이 남아 있으면 공유 참가자 삭제와 전체 초기화를 차단합니다.
 
 운영 배포 전 기존 D1·R2 백업과 설정을 보관하고, 배포 후 기존 쿠키로 참가자 상태·관리자 기록·사진과 정식 QR 주소를 확인하세요. 되돌릴 때도 같은 Worker·DB·R2·secret·쿠키 설정을 사용하면 데이터를 다시 만들 필요가 없습니다.
 

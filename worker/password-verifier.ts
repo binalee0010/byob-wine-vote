@@ -46,6 +46,25 @@ export class PasswordVerifier {
       if(typeof data.password!=='string' || data.password.length>1024)return json({code:'invalid_request'},400);
       return json({valid:await verifyPasswordHash(data.password,credential.password_hash),version:credential.version});
     }
+    if(path==='/reset') {
+      if(typeof data.newPassword!=='string' || data.newPassword.length<10 || data.newPassword.length>1024 || typeof data.tokenHash!=='string' || !/^[a-f0-9]{64}$/.test(data.tokenHash) || typeof data.ownerEmail!=='string')return json({code:'invalid_reset_token'},400);
+      const reset=await this.env.DB.prepare('SELECT * FROM member_password_resets WHERE token_hash=? AND owner_email=? AND expires_at>?').bind(data.tokenHash,data.ownerEmail,Date.now()).first<{member_id:string;email:string;role:string;credential_version:string}>();
+      if(!reset)return json({code:'invalid_reset_token'},400);
+      const hash=await hashPassword(data.newPassword),version=crypto.randomUUID();
+      if(reset.role==='owner') {
+        const changed=await this.env.DB.prepare(`UPDATE admin_credentials SET password_hash=?,version=? WHERE id=1 AND version=? AND EXISTS(
+          SELECT 1 FROM member_password_resets WHERE token_hash=? AND member_id='owner' AND role='owner' AND email=? AND owner_email=? AND credential_version=admin_credentials.version AND expires_at>?)
+          AND NOT EXISTS(SELECT 1 FROM members WHERE (id='owner' AND (email<>? OR role<>'owner' OR status<>'approved')) OR (email=? AND role<>'owner'))`)
+          .bind(hash,version,reset.credential_version,data.tokenHash,data.ownerEmail,data.ownerEmail,Date.now(),data.ownerEmail,data.ownerEmail).run();
+        if(!changed.meta.changes)return json({code:'invalid_reset_token'},400);
+        return json({workspaceSlug:'owner',namespace:null});
+      }
+      const changed=await this.env.DB.prepare(`UPDATE members SET password_hash=?,credential_version=? WHERE id=? AND role='member' AND email=? AND email<>? AND credential_version=? AND EXISTS(
+        SELECT 1 FROM member_password_resets r WHERE r.token_hash=? AND r.member_id=members.id AND r.role='member' AND r.email=members.email AND r.credential_version=members.credential_version AND r.owner_email=? AND r.expires_at>?) RETURNING workspace_slug,namespace`)
+        .bind(hash,version,reset.member_id,reset.email,data.ownerEmail,reset.credential_version,data.tokenHash,data.ownerEmail,Date.now()).first<{workspace_slug:string;namespace:string|null}>();
+      if(!changed)return json({code:'invalid_reset_token'},400);
+      return json({workspaceSlug:changed.workspace_slug,namespace:changed.namespace});
+    }
     if(path==='/change' || path==='/member-change') {
       if(typeof data.currentPassword!=='string' || !data.currentPassword.length || data.currentPassword.length>1024 || typeof data.newPassword!=='string' || data.newPassword.length<10 || data.newPassword.length>1024 || typeof data.sessionHash!=='string' || !/^[a-f0-9]{64}$/.test(data.sessionHash))return json({code:'invalid_request'},400);
       if(!await verifyPasswordHash(data.currentPassword,credential.password_hash))return json({code:'invalid_current_password'},403);

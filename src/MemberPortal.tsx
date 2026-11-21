@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent } from 'react';
 import Admin, { PasswordChange } from './Admin';
 import { api, ApiError, setMemberCsrfToken, setMemberWorkspaceSlug, type Member, type MemberSession } from './api';
 import { siteTitle } from './branding';
@@ -11,6 +11,8 @@ export default function MemberPortal({ onStandalone }: { onStandalone?: () => vo
   const adminUrl = approvalsIntent ? '/admin?settings=approvals' : '/admin';
   const [session, setSession] = useState<MemberSession>({ authenticated: false, csrfToken: null, member: null });
   const [signup, setSignup] = useState(false);
+  const [resetToken, setResetToken] = useState(() => new URLSearchParams(location.hash.slice(1)).get('reset') ?? new URLSearchParams(location.search).get('reset'));
+  const [resetting, setResetting] = useState(resetToken !== null);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
@@ -19,6 +21,14 @@ export default function MemberPortal({ onStandalone }: { onStandalone?: () => vo
   const [settings, setSettings] = useState(false);
   const submitting = useRef(false);
   const sessionEpoch = useRef(0);
+  useLayoutEffect(() => {
+    if (resetToken === null) return;
+    const url = new URL(location.href);
+    url.searchParams.delete('reset');
+    const fragment = new URLSearchParams(url.hash.slice(1));
+    if (fragment.has('reset')) { fragment.delete('reset'); url.hash = fragment.toString(); }
+    history.replaceState(history.state, '', url.pathname + url.search + url.hash);
+  }, [resetToken]);
   const applySession = useCallback((next: MemberSession) => {
     if (next.authenticated && next.member?.status === 'approved') {
       if (location.pathname !== '/admin') { location.replace(adminUrl); return; }
@@ -33,6 +43,7 @@ export default function MemberPortal({ onStandalone }: { onStandalone?: () => vo
     if (current === sessionEpoch.current) applySession(next);
   }, [applySession]);
   useEffect(() => {
+    if (resetting) return;
     const current = ++sessionEpoch.current;
     let stopped = false;
     void api<MemberSession>('/members/session').then(next => {
@@ -48,8 +59,8 @@ export default function MemberPortal({ onStandalone }: { onStandalone?: () => vo
       if (!stopped && current === sessionEpoch.current) setError((e as Error).message);
     });
     return () => { stopped = true; };
-  }, [applySession, onStandalone]);
-  useEffect(() => { if (session?.member?.status !== 'approved') document.title = siteTitle + ' · 운영자 로그인'; }, [session]);
+  }, [applySession, onStandalone, resetting]);
+  useEffect(() => { if (session?.member?.status !== 'approved') document.title = siteTitle + ' · ' + (resetting ? '비밀번호 재설정' : signup ? '가입 신청' : '로그인'); }, [session, resetting, signup]);
   useEffect(() => {
     if (approvalsIntent && session.authenticated && session.member?.status === 'approved' && session.member.role === 'owner') setSettings(true);
   }, [approvalsIntent, session]);
@@ -58,7 +69,7 @@ export default function MemberPortal({ onStandalone }: { onStandalone?: () => vo
     applySession({ authenticated: false, csrfToken: null, member: null });
     setSettings(false);
     setMessage('로그인 세션이 종료되었습니다. 다시 로그인해 주세요.');
-    document.title = siteTitle + ' · 운영자 로그인';
+    document.title = siteTitle + ' · 로그인';
     if (location.pathname !== '/') location.replace('/');
   }, [applySession]);
   async function authenticate(event: FormEvent) {
@@ -77,7 +88,7 @@ export default function MemberPortal({ onStandalone }: { onStandalone?: () => vo
     if (submitting.current) return;
     ++sessionEpoch.current;
     submitting.current = true; setBusy(true); setError('');
-    try { await api('/members/session', 'DELETE'); applySession({ authenticated: false, csrfToken: null, member: null }); setSettings(false); setPassword(''); setMessage('로그아웃했습니다.'); document.title = siteTitle + ' · 운영자 로그인'; location.replace('/'); }
+    try { await api('/members/session', 'DELETE'); applySession({ authenticated: false, csrfToken: null, member: null }); setSettings(false); setPassword(''); setMessage('로그아웃했습니다.'); document.title = siteTitle + ' · 로그인'; location.replace('/'); }
     catch (e) { setError((e as Error).message); throw e; }
     finally { submitting.current = false; setBusy(false); }
   }
@@ -87,22 +98,55 @@ export default function MemberPortal({ onStandalone }: { onStandalone?: () => vo
     setMessage('비밀번호를 변경했습니다. 내 계정의 모든 세션이 종료되었습니다. 새 비밀번호로 로그인해 주세요.');
   }
   const member = session?.authenticated ? session.member : null;
-  if (member?.status === 'approved') return <>
+  if (!resetting && member?.status === 'approved') return <>
     <Admin member={member} onSettings={() => { setError(''); setSettings(true); }} onSessionEnded={sessionEnded}/>
     {settings && <MemberSettings member={member} busy={busy} error={error} onClose={() => { setSettings(false); setError(''); }} onLogout={logout} onChangePassword={changePassword} onSessionEnded={sessionEnded}/>}
   </>;
   return <div className="participant-shell ballot-shell member-shell"><SiteHeader title={siteTitle}/><main>
-    <div><h2>투표 운영자</h2><p className="muted">승인된 계정으로 나만의 투표와 참가자, 와인 사진, 지난 기록을 관리합니다.</p></div>
     <Notice error>{error}</Notice><Notice>{message}</Notice>
-    {member ? <section className="panel member-status"><h3>{member.status === 'pending' ? '가입 승인 대기 중' : '가입 신청이 승인되지 않았습니다'}</h3><p className="member-email">{member.email}</p><p className="muted">{member.status === 'pending' ? '슈퍼관리자가 가입을 승인하면 내 투표를 만들고 관리할 수 있습니다.' : '가입 신청에 관해 슈퍼관리자에게 문의해 주세요.'}</p><div className="row"><button type="button" disabled={busy} onClick={() => { setError(''); void refreshSession().catch(e => setError((e as Error).message)); }}>승인 상태 확인</button><button type="button" disabled={busy} onClick={() => { void logout().catch(() => {}); }}>로그아웃</button></div></section>
-      : <section className="panel member-login"><h3>{signup ? '운영자 가입 신청' : '운영자 로그인'}</h3><form onSubmit={authenticate}><fieldset disabled={busy}>
-        <label>이메일<input type="email" name="email" autoComplete="username" maxLength={254} required value={email} onChange={e => setEmail(e.target.value)}/></label>
+    {resetting ? <PasswordReset key={resetToken ?? 'request'} token={resetToken} onBack={() => { setResetting(false); setResetToken(null); setSignup(false); }} onRequestAgain={() => setResetToken(null)} onComplete={() => { setResetting(false); setResetToken(null); setSignup(false); setPassword(''); setMessage('비밀번호를 변경했습니다. 새 비밀번호로 로그인해 주세요.'); }}/>
+      : member ? <section className="panel member-status"><h2>{member.status === 'pending' ? '가입 승인 대기 중' : '가입 신청이 승인되지 않았습니다'}</h2><p className="member-email">{member.email}</p><p className="muted">{member.status === 'pending' ? '관리자가 가입을 승인하면 내 투표를 만들고 관리할 수 있습니다.' : '가입 신청에 관해 관리자에게 문의해 주세요.'}</p><div className="row"><button type="button" disabled={busy} onClick={() => { setError(''); void refreshSession().catch(e => setError((e as Error).message)); }}>승인 상태 확인</button><button type="button" disabled={busy} onClick={() => { void logout().catch(() => {}); }}>로그아웃</button></div></section>
+      : <section className="panel member-login"><h2>{signup ? '가입 신청' : '로그인'}</h2><form onSubmit={authenticate}><fieldset disabled={busy}>
+        <label>이메일<input type="email" name="email" autoFocus autoComplete="username" maxLength={254} required value={email} onChange={e => setEmail(e.target.value)}/></label>
         <label>비밀번호<input type="password" name="password" autoComplete={signup ? 'new-password' : 'current-password'} minLength={signup ? 10 : undefined} maxLength={1024} required value={password} onChange={e => setPassword(e.target.value)}/></label>
-        {signup && <small>비밀번호 10자 이상 · 가입 신청 후 슈퍼관리자의 승인이 필요합니다.</small>}
+        {signup && <small>비밀번호 10자 이상</small>}
         <button className="primary" disabled={busy || !email.trim() || !password}>{busy ? '확인 중…' : signup ? '가입 신청' : '로그인'}</button>
-      </fieldset></form><button type="button" className="text-button" disabled={busy} onClick={() => { setSignup(!signup); setPassword(''); setError(''); setMessage(''); }}>{signup ? '로그인으로 돌아가기' : '운영자 가입 신청'}</button></section>}
-    <p className="muted member-participant-help">투표 참가자는 가입하지 않아도 됩니다. 전달받은 투표 링크에서 이름을 입력해 참여해 주세요.</p>
+      </fieldset></form><div className="member-login-links"><button type="button" className="text-button" disabled={busy} onClick={() => { setSignup(!signup); setPassword(''); setError(''); setMessage(''); }}>{signup ? '로그인으로 돌아가기' : '가입 신청'}</button><button type="button" className="text-button" disabled={busy} onClick={() => { setResetting(true); setPassword(''); setError(''); setMessage(''); }}>비밀번호 재설정</button></div></section>}
   </main></div>;
+}
+
+export function PasswordReset({ token, onBack, onRequestAgain, onComplete }: { token: string | null; onBack: () => void; onRequestAgain: () => void; onComplete: () => void }) {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [invalid, setInvalid] = useState(token === '');
+  const [error, setError] = useState('');
+  const submitting = useRef(false);
+  const result = useRef<HTMLDivElement>(null);
+  useEffect(() => { if (sent || invalid) result.current?.focus(); }, [sent, invalid]);
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (submitting.current || invalid || sent) return;
+    submitting.current = true; setBusy(true); setError('');
+    try {
+      if (token !== null) { await api('/members/password-reset/confirm', 'POST', { token, newPassword: password }); setPassword(''); onComplete(); }
+      else { await api('/members/password-reset/request', 'POST', { email }); setSent(true); }
+    } catch (e) {
+      if (e instanceof ApiError && e.code === 'invalid_reset_token') { setPassword(''); setInvalid(true); }
+      else setError((e as Error).message);
+    } finally { submitting.current = false; setBusy(false); }
+  }
+  return <section className="panel member-login"><h2>비밀번호 재설정</h2><Notice error>{error}</Notice>
+    {invalid ? <div ref={result} tabIndex={-1} className="member-reset-result"><Notice error>재설정 링크가 만료되었거나 이미 사용되었습니다. 새 메일을 요청해 주세요.</Notice><button type="button" className="primary" onClick={onRequestAgain}>새 재설정 메일 받기</button></div>
+      : sent ? <div ref={result} tabIndex={-1} className="member-reset-result"><Notice>가입한 이메일이면 재설정 링크를 보냈습니다. 메일이 오지 않으면 다시 요청해 주세요.</Notice><button type="button" onClick={() => setSent(false)}>다시 요청</button></div>
+      : <form onSubmit={submit}><fieldset disabled={busy}>
+        {token !== null ? <><label>새 비밀번호<input type="password" name="newPassword" autoFocus autoComplete="new-password" minLength={10} maxLength={1024} required value={password} onChange={e => setPassword(e.target.value)}/></label><small>비밀번호 10자 이상</small></>
+          : <label>이메일<input type="email" name="email" autoFocus autoComplete="username" maxLength={254} required value={email} onChange={e => setEmail(e.target.value)}/></label>}
+        <button type="submit" className="primary" disabled={busy || (token !== null ? password.length < 10 : !email.trim())}>{busy ? '처리 중…' : token !== null ? '비밀번호 변경' : '재설정 메일 보내기'}</button>
+      </fieldset></form>}
+    <button type="button" className="text-button" disabled={busy} onClick={onBack}>로그인으로 돌아가기</button>
+  </section>;
 }
 
 export function MemberSettings({ member, busy, error, onClose, onLogout, onChangePassword, onSessionEnded }: {
@@ -114,7 +158,7 @@ export function MemberSettings({ member, busy, error, onClose, onLogout, onChang
   useEffect(() => { const previous = document.activeElement as HTMLElement | null; dialog.current?.showModal(); return () => { dialog.current?.close(); previous?.focus(); }; }, []);
   return <dialog ref={dialog} className="member-settings-dialog" aria-labelledby={titleId} onCancel={event => { if (busy) event.preventDefault(); else onClose(); }}>
     <div className="row spread"><h2 id={titleId}>계정 설정</h2><button type="button" disabled={busy} onClick={onClose} aria-label="계정 설정 닫기">닫기</button></div>
-    <p className="member-email">{member.email}</p><small>{member.role === 'owner' ? '슈퍼관리자' : '투표 운영자'}</small><Notice error>{error}</Notice>
+    <p className="member-email">{member.email}</p><small>{member.role === 'owner' ? '관리자' : '회원'}</small><Notice error>{error}</Notice>
     {member.role === 'owner' && <MembershipRequests onSessionEnded={onSessionEnded}/>}
     <PasswordChange busy={busy} onChangePassword={onChangePassword}/>
     <button type="button" disabled={busy} onClick={() => { void onLogout().catch(() => {}); }}>로그아웃</button>
