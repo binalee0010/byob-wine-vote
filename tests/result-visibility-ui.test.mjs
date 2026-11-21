@@ -48,6 +48,33 @@ test('three result scopes save before or after closing and show the requested la
   } finally { await settle(); control?.close(); app.close(); env.restore(); }
 });
 
+test('full ranking explains current candidate points outside the select only while selected', async () => {
+  const env = environment(); let state = { event: { title: '모임' }, activities: [{ ...activity('private', 'waiting'), started: false, votingMethod: 'full' }], participants: [], submittedCount: 0, candidates: [] };
+  const app = mount(() => Progress({ state, action: async () => true, busy: false })); let helpId;
+  try {
+    for (const [count, explanation] of [[0, '최하위 1점부터 순위마다 1점씩 증가'], [1, '1위 1점'], [7, '1위 7점, 최하위 1점']]) {
+      state = { ...state, candidates: Array.from({ length: count }, (_, i) => ({ id: 'wine-' + i, number: i + 1, name: '와인 ' + i, photoUrl: null })) };
+      const settings = named(app.render(), 'ActivitySettings'); const method = named(settings.type(settings.props), 'VotingMethodSetting');
+      const methodTree = method.type(method.props); const select = nodes(methodTree).find(node => node.type === 'select');
+      const option = nodes(select).find(node => node.type === 'option' && node.props.value === 'full');
+      assert.equal([option.props.children].flat().join(''), '전체 순위 설정');
+      helpId = select.props['aria-describedby']; assert.ok(helpId);
+      const help = nodes(methodTree).find(node => node.props?.id === helpId);
+      assert.equal(help.type, 'small'); assert.equal([help.props.children].flat().join(''), explanation);
+      assert.ok(!nodes(select).includes(help)); assert.ok(nodes(methodTree).indexOf(select) < nodes(methodTree).indexOf(help));
+      assert.equal(select.props.value, 'full');
+    }
+    for (const value of ['winner', 'custom']) {
+      let settings = named(app.render(), 'ActivitySettings'); let method = named(settings.type(settings.props), 'VotingMethodSetting');
+      nodes(method.type(method.props)).find(node => node.type === 'select').props.onChange({ target: { value } });
+      settings = named(app.render(), 'ActivitySettings'); method = named(settings.type(settings.props), 'VotingMethodSetting');
+      const methodTree = method.type(method.props); const select = nodes(methodTree).find(node => node.type === 'select');
+      assert.equal(select.props.value, value); assert.ok(!select.props['aria-describedby']);
+      assert.equal(nodes(methodTree).find(node => node.props?.id === helpId), undefined);
+    }
+  } finally { await settle(); app.close(); env.restore(); }
+});
+
 test('one nearby settings form preserves save retries and start-close guards with a long participant list', async () => {
   const env = environment(); const requests = []; let fail = true;
   let state = { event: { title: '모임', memo: '기존 메모' }, activities: [{ ...activity('private', 'waiting'), started: false, resultsLocked: false, votingMethod: 'full' }], participants: Array.from({ length: 200 }, (_, i) => ({ id: 'person-' + i, name: '참가자 ' + i })), submittedCount: 12, candidates: [], rosterRevision: 1 };
@@ -141,6 +168,7 @@ test('result refresh denial clears displayed rows and photo, and stale responses
   globalThis.fetch = async () => Response.json({ id: 'byob', title: '결과', revision: 2, participantId: 'joined', rows: [row] });
   try {
     const node = named(entry.render(), 'PublicResults'); results = mount(() => node.type(node.props)); results.render(); await settle(); let tree = results.render();
+    assert.ok(!JSON.stringify(tree).includes('같으면 공동 순위')); assert.ok(!JSON.stringify(tree).includes('함께 나누는 결과'));
     named(tree, 'RankedResultList').props.onPhoto(row); tree = results.render(); assert.equal(named(tree, 'PhotoDialog').props.photo, row);
     globalThis.fetch = async () => Response.json({ error: '참여했던 이름으로 로그인해 주세요.', code: 'participant_required' }, { status: 403 });
     await env.polls.shift()(); tree = results.render(); assert.equal(named(tree, 'RankedResultList'), undefined); assert.equal(named(tree, 'PhotoDialog').props.photo, null); assert.equal(changes.length, 1);

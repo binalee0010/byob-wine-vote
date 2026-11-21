@@ -619,6 +619,24 @@ test('submission status is read-only and aggregate controls use server counts wi
   } finally { restore(); }
 });
 
+test('result lists keep tied ranks and scores without a repeated tie explanation', () => {
+  const restore = environment();
+  try {
+    for (const method of ['winner', 'full']) {
+      const rows = [1, 1, 3].map((rank, i) => ({ id: 'wine-' + i, candidateId: 'wine-' + i, number: i + 1, name: '와인 ' + i, photoUrl: null, rank, ...(method === 'winner' ? { votes: i < 2 ? 1 : 0 } : { points: i < 2 ? 4 : 1 }) }));
+      const state = { activities: [{ id: 'byob', title: '질문', revision: 1, started: true, status: 'closed', votingMethod: method }], candidates: rows, byobResults: rows, submittedCount: 2 };
+      const app = mount(() => uploadApi.RankedResponses({ state, action: async () => true, busy: false }));
+      try {
+        const tree = app.render(); assert.ok(!JSON.stringify(tree).includes('같으면 공동 순위'));
+        const list = named(tree, 'RankedResultList'); const result = list.type(list.props);
+        assert.equal(result.props.role, 'list'); assert.equal(result.props['aria-label'], method === 'winner' ? '와인별 순위와 득표수' : '와인별 순위와 총점');
+        assert.deepEqual(nodes(result).filter(node => node.props?.className === 'ranked-result-rank').map(node => node.props.children), ['공동 1위', '공동 1위', '3위']);
+        assert.deepEqual(nodes(result).filter(node => node.props?.className === 'ranked-result-points').map(node => node.props.children), method === 'winner' ? ['1표', '1표', '0표'] : ['4점', '4점', '1점']);
+      } finally { app.close(); }
+    }
+  } finally { restore(); }
+});
+
 test('removed participation settings never survive drafts or patch validation', () => {
   const state = { event: { title: '기존 제목', participationMode: 'restricted' }, activities: [] };
   const server = progressServerFields(state); assert.equal(server['event:participationMode'], undefined);

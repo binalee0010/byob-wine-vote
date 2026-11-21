@@ -189,8 +189,7 @@ export default function RankedBallot({ candidates, ranking, submitted, disabled,
   const sourceIndex = draggedId ? ranking.indexOf(draggedId) : -1;
   return <fieldset className="ranked-ballot">
     <legend>와인 순위 정렬</legend>
-    {!submitted && <p className="rank-draft">미제출 초안 · 처음에는 등록 순서로 표시됩니다.</p>}
-    <p className="muted">{ranking.length > 1 ? '끌어서 옮기거나 ↑↓ 버튼을 눌러 가장 마음에 든 와인을 맨 위로 놓아 주세요. 터치 화면에서는 손잡이를 끌 수 있어요.' : '와인을 확인한 뒤 순위를 제출해 주세요.'}</p>
+    {!submitted && <p className="rank-draft">미제출</p>}
     <p className="rank-announcement" role="status">{announcement}</p>
     <ol className={draggedId ? 'rank-list rank-preview' : 'rank-list'} ref={list} role="list" onClickCapture={event => {
       if (suppressClick.current && event.detail !== 0) {

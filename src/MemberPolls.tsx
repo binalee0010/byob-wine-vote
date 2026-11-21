@@ -51,7 +51,7 @@ export default function MemberPolls({ onSettings, onLogout, loggingOut, sessionE
         <label>투표 제목<input name="title" required maxLength={120} value={title} onChange={event => setTitle(event.target.value)}/></label>
         <button type="submit" className="primary" disabled={busy || !title.trim()}>투표 만들기</button>
       </fieldset></form></section>
-      <section className="panel"><h2 id="created-polls-heading" tabIndex={-1}>만든 투표</h2>{polls === null ? error ? <button type="button" onClick={() => { setError(''); void refresh().catch(failure => { if (failure instanceof ApiError && (failure.status === 401 || failure.status === 403)) onSessionEnded(); else setError((failure as Error).message); }); }}>다시 불러오기</button> : <p role="status">내 투표를 불러오고 있어요…</p>
+      <section className="panel" aria-label="만든 투표">{polls === null ? error ? <button type="button" onClick={() => { setError(''); void refresh().catch(failure => { if (failure instanceof ApiError && (failure.status === 401 || failure.status === 403)) onSessionEnded(); else setError((failure as Error).message); }); }}>다시 불러오기</button> : <p role="status">내 투표를 불러오고 있어요…</p>
         : polls.length ? <ul className="member-poll-list">{polls.map(poll => <li key={poll.slug}>
           <a href={'/admin/p/' + encodeURIComponent(poll.slug)}>{poll.title}</a>
           <span className={'badge ' + poll.status}>{statusText[poll.status]}</span>

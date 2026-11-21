@@ -2,7 +2,7 @@ import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type 
 import { api, ApiError, isParticipantChanged, participantChangedMessage, saveActivityAnswer, statusText, type Activity, type Bootstrap, type ByobResult, type Candidate, type Detail, type Id, type Participant, type Results, type VotingMethod } from './api';
 import MemberPortal from './MemberPortal';
 import Admin from './Admin';
-import { rankLabel, submissionStatusText, votingMethodInfo } from './format';
+import { rankLabel, submissionStatusText } from './format';
 import { isCompleteRanking, moveCandidateRank, selectCustomRank } from './forms';
 import RankedBallot from './RankedBallot';
 import CandidatePhoto from './CandidatePhoto';
@@ -187,11 +187,7 @@ export function RankedVote({ activity, participant, refresh, onRevisionChanged }
             }}/>;
     return <section className="panel ballot-status">
     <div className="row spread"><h2 id="ranked-vote-heading" tabIndex={-1}>{activity.title}</h2><Status activity={activity}/></div>
-    {activity.status === 'closed'
-            ? <>{participant && <p className="submission">{'내 투표 ' + submissionStatusText(!!participant.submitted?.byob)}</p>}<p className="muted">{activity.resultVisibility === 'participants' ? '참여했던 이름으로 로그인하면 결과를 볼 수 있습니다.' : '현재 결과는 공개되지 않았어요.'}</p></>
-            : activity.status === 'waiting'
-                ? <p className="muted">투표가 시작되면 이 화면에서 참여할 수 있어요.</p>
-                : <p className="muted">{votingMethodInfo[activity.votingMethod ?? 'full'].description}</p>}
+    {activity.status === 'closed' && <>{participant && <p className="submission">{'내 투표 ' + submissionStatusText(!!participant.submitted?.byob)}</p>}<p className="muted">{activity.resultVisibility === 'participants' ? '참여했던 이름으로 로그인하면 결과를 볼 수 있습니다.' : '현재 결과는 공개되지 않았어요.'}</p></>}
   </section>;
 }
 function AnswerForm({ activity, view, participantId, alreadySubmitted = false, onSaved, onRevisionChanged }: {
@@ -278,14 +274,14 @@ function AnswerForm({ activity, view, participantId, alreadySubmitted = false, o
         }
     }
     const disabled = busy || participantChanged || activity.status !== 'open';
-    return <section className="panel answer-panel ranked-answer"><div className="row spread"><h2 id="ranked-vote-heading" tabIndex={-1}>{activity.title}</h2><Status activity={activity}/></div><Notice error>{!detail ? error : ''}</Notice>{!detail ? <><p>참여 내용을 불러오는 중이에요.</p>{error && <button onClick={load}>다시 불러오기</button>}</> : <form onSubmit={submit}>
+    return <section className="panel answer-panel ranked-answer"><div className="row spread"><h2 id="ranked-vote-heading" tabIndex={-1}>{activity.title}</h2><Status activity={activity}/></div><Notice error>{!detail ? error : ''}</Notice>{!detail ? <>{!error && <p>참여 내용을 불러오는 중이에요.</p>}{error && <button onClick={load}>다시 불러오기</button>}</> : <form onSubmit={submit}>
     {activity.status !== 'open' && <Notice>참여가 마감되어 답변을 제출하거나 수정할 수 없어요.</Notice>}
     {method === 'full' && <RankedBallot candidates={candidates} ranking={ranking} submitted={submitted} disabled={disabled} onMove={moveRank} onPhoto={setPhoto}/>}
     {method === 'custom' && <CustomRankBallot candidates={candidates} ranking={ranking} rankPoints={rankPoints} disabled={disabled} onSelect={(id, place) => changeRanking(current => selectCustomRank(current, id, place, selectionCount))} onMove={moveRank} onPhoto={setPhoto}/>}
     {method === 'winner' && <SingleWineBallot candidates={candidates} selectedId={ranking[0]} disabled={disabled} onSelect={id => changeRanking([id])} onPhoto={setPhoto}/>}
     <Notice error>{error}</Notice>
     {saved && <Notice>투표를 저장했어요.</Notice>}
-    <div className="form-footer"><p className="muted">{submitted ? '투표 제출 완료 · 마감 전까지 수정할 수 있어요.' : '진행 중에는 다시 참여해 답변을 수정할 수 있어요.'}</p><button className="primary" disabled={disabled || !ready}>{busy ? '제출 확인 중…' : (submitted ? '수정 내용 제출' : method === 'winner' ? '투표 제출' : '순위 제출')}</button></div></form>}<PhotoDialog photo={photo} onClose={() => setPhoto(null)}/></section>;
+    <div className="form-footer">{submitted && !saved && <p className="submission done">제출 완료</p>}<button className="primary" disabled={disabled || !ready}>{busy ? '제출 확인 중…' : (submitted ? '수정 내용 제출' : method === 'winner' ? '투표 제출' : '순위 제출')}</button></div></form>}<PhotoDialog photo={photo} onClose={() => setPhoto(null)}/></section>;
 }
 export function SingleWineBallot({ candidates, selectedId, disabled, onSelect, onPhoto }: {
     candidates: Candidate[];
@@ -296,7 +292,7 @@ export function SingleWineBallot({ candidates, selectedId, disabled, onSelect, o
 }) {
     const radio = (candidate: Candidate) => <input type="radio" name="wine" value={candidate.id} checked={selectedId === candidate.id} onChange={() => onSelect(candidate.id)} disabled={disabled} required/>;
     return <fieldset className="compact-single-ballot">
-    <legend>가장 마음에 든 와인 하나를 골라 주세요</legend>
+    <legend>와인 선택</legend>
     <ul className="ranked-result-list" role="list">
       {candidates.map(candidate => <li className={'single-choice-row' + (selectedId === candidate.id ? ' selected' : '')} key={candidate.id}>
         <CandidatePhoto candidate={candidate} onPhoto={onPhoto} compact/>
@@ -331,8 +327,7 @@ export function CustomRankBallot({ candidates, ranking, rankPoints, disabled, on
         onMove(id, place);
     }
     return <fieldset className="custom-rank-ballot">
-    <legend>{`와인 ${rankPoints.length}개의 순위를 정해 주세요`}</legend>
-    <p className="muted">{'와인마다 남은 순위를 고르세요.'}{rankPoints.length > 1 && ' 선택한 와인은 위·아래 버튼으로 순서를 바꿀 수 있어요.'}</p>
+    <legend>{`상위 ${rankPoints.length}개 순위`}</legend>
     <p className="rank-draft" role="status">{ranking.filter(Boolean).length} / {rankPoints.length}개 선택</p>
     {ranking.some(Boolean) && <ol className="custom-rank-summary" aria-label="선택한 순위" role="list">
       {ranking.map((id, place) => {
@@ -406,8 +401,5 @@ function PublicResults({ view, participantId, onRevisionChanged }: {
         }
     }, [view, participantId, onRevisionChanged]);
     useEffect(() => { let stopped = false; let timer: number; const poll = async () => { await load(); if (!stopped) timer = window.setTimeout(poll, 3000); }; void poll(); return () => { stopped = true; ++loadEpoch.current; clearTimeout(timer); }; }, [load]);
-    return <section className="panel results"><p className="eyebrow">함께 나누는 결과</p><h2>{results?.title || '투표 결과'}</h2><Notice error>{error}</Notice>{error && <button onClick={load}>다시 불러오기</button>}{results && <>
-      <RankedResultList rows={results.rows} onPhoto={setPhoto} method={results.votingMethod}/>
-      <p className="muted tally-note">{results.votingMethod === 'winner' ? '득표수가 같으면 공동 순위예요.' : '총점이 같으면 공동 순위예요.'}</p>
-  </>}<PhotoDialog photo={photo} onClose={() => setPhoto(null)}/></section>;
+    return <section className="panel results"><h2>{results?.title || '투표 결과'}</h2><Notice error>{error}</Notice>{error && <button onClick={load}>다시 불러오기</button>}{results && <RankedResultList rows={results.rows} onPhoto={setPhoto} method={results.votingMethod}/>}<PhotoDialog photo={photo} onClose={() => setPhoto(null)}/></section>;
 }
