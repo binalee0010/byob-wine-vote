@@ -1,1 +1,1 @@
-export const siteTitle = 'BYOB 와인 투표';
+export const siteTitle = '모두의 투표';

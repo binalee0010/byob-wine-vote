@@ -35,19 +35,19 @@ export class PasswordVerifier {
     if(request.method!=='POST')return json({code:'not_found'},404);
     const data=await request.json() as Record<string,unknown>;
     if(path==='/hash') {
-      if(typeof data.password!=='string' || data.password.length<10 || data.password.length>1024)return json({code:'invalid_request'},400);
+      if(typeof data.password!=='string' || !data.password.length)return json({code:'invalid_request'},400);
       return json({hash:await hashPassword(data.password)});
     }
     if(path==='/matches') {
-      if(typeof data.password!=='string' || !data.password.length || data.password.length>1024 || typeof data.hash!=='string')return json({code:'invalid_request'},400);
+      if(typeof data.password!=='string' || !data.password.length || typeof data.hash!=='string')return json({code:'invalid_request'},400);
       return json({valid:await verifyPasswordHash(data.password,data.hash)});
     }
     if(path==='/verify') {
-      if(typeof data.password!=='string' || data.password.length>1024)return json({code:'invalid_request'},400);
+      if(typeof data.password!=='string' || !data.password.length)return json({code:'invalid_request'},400);
       return json({valid:await verifyPasswordHash(data.password,credential.password_hash),version:credential.version});
     }
     if(path==='/reset') {
-      if(typeof data.newPassword!=='string' || data.newPassword.length<10 || data.newPassword.length>1024 || typeof data.tokenHash!=='string' || !/^[a-f0-9]{64}$/.test(data.tokenHash) || typeof data.ownerEmail!=='string')return json({code:'invalid_reset_token'},400);
+      if(typeof data.newPassword!=='string' || !data.newPassword.length || typeof data.tokenHash!=='string' || !/^[a-f0-9]{64}$/.test(data.tokenHash) || typeof data.ownerEmail!=='string')return json({code:'invalid_reset_token'},400);
       const reset=await this.env.DB.prepare('SELECT * FROM member_password_resets WHERE token_hash=? AND owner_email=? AND expires_at>?').bind(data.tokenHash,data.ownerEmail,Date.now()).first<{member_id:string;email:string;role:string;credential_version:string}>();
       if(!reset)return json({code:'invalid_reset_token'},400);
       const hash=await hashPassword(data.newPassword),version=crypto.randomUUID();
@@ -66,7 +66,7 @@ export class PasswordVerifier {
       return json({workspaceSlug:changed.workspace_slug,namespace:changed.namespace});
     }
     if(path==='/change' || path==='/member-change') {
-      if(typeof data.currentPassword!=='string' || !data.currentPassword.length || data.currentPassword.length>1024 || typeof data.newPassword!=='string' || data.newPassword.length<10 || data.newPassword.length>1024 || typeof data.sessionHash!=='string' || !/^[a-f0-9]{64}$/.test(data.sessionHash))return json({code:'invalid_request'},400);
+      if(typeof data.currentPassword!=='string' || !data.currentPassword.length || typeof data.newPassword!=='string' || !data.newPassword.length || typeof data.sessionHash!=='string' || !/^[a-f0-9]{64}$/.test(data.sessionHash))return json({code:'invalid_request'},400);
       if(!await verifyPasswordHash(data.currentPassword,credential.password_hash))return json({code:'invalid_current_password'},403);
       const hash=await hashPassword(data.newPassword);
       const guard=path==='/change'

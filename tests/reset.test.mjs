@@ -8,7 +8,7 @@ import { client, createApp, TEST_PASSWORD } from './harness.mjs';
 
 const bundle = await build({ entryPoints: ['worker/password-reset.ts'], bundle: true, write: false, format: 'esm', platform: 'node', external: ['node:*'] });
 const { requestPasswordReset, confirmPasswordReset } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString('base64')}`);
-const ownerEmail = 'owner@example.test', memberPassword = 'Original-member-password!', nextPassword = 'New-member-password!';
+const ownerEmail = 'owner@example.test', memberPassword = 'Original-member-password!', nextPassword = '24';
 const smtp = JSON.stringify({ secure: true, host: 'smtp.example.test', port: 465, user: 'synthetic', pass: 'synthetic', from: 'BYOB <noreply@example.test>' });
 const digest = value => createHash('sha256').update(value).digest('hex');
 async function environment(local, overrides = {}) {
@@ -78,7 +78,7 @@ test('a member email link resets once, revokes own sessions and preserves approv
     assert.equal(stored.length, 2); assert(stored.some(row => row.token_hash === digest(firstToken)));
     assert(!JSON.stringify(stored).includes(firstToken)); assert(!JSON.stringify(stored).includes(secondToken));
     assert(stored.every(row => row.expires_at > Date.now() + 29 * 60000 && row.expires_at <= Date.now() + 30 * 60000));
-    assert.equal((await confirm(member, firstToken, 'short')).status, 400);
+    assert.equal((await confirm(member, firstToken, '')).status, 400);
     assert.equal((await confirm(member, 'f'.repeat(64))).body.code, 'invalid_reset_token');
     const reset = await confirm(member, firstToken);
     assert.equal(reset.status, 200); assert.deepEqual(reset.body, { ok: true });

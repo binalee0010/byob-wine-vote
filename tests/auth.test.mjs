@@ -24,11 +24,11 @@ test('admin authentication, CSRF, password changes and revocation preserve parti
     assert.equal((await person('/api/activities/byob/answer', 'PUT', { ranking, revision: 0 })).status, 200);
     const before = (await admin('/api/admin/state')).body;
     const participantSessions = (await local.db.prepare("SELECT * FROM sessions WHERE role='participant'").all()).results;
-    const nextPassword = 'Synthetic-new-password!';
+    const nextPassword = 'a'.repeat(1025);
     const change = (request, patch = {}, options) => request('/api/admin/password', 'POST', { currentPassword: TEST_PASSWORD, newPassword: nextPassword, ...patch }, options);
     assert.equal((await change(anon)).status, 401);
     assert.equal((await change(admin, {}, { headers: { Origin: 'https://other.test' } })).status, 403);
-    for (const newPassword of ['123456789', 'x'.repeat(1025), null]) assert.equal((await change(admin, { newPassword })).status, 400);
+    for (const newPassword of ['', 123, null]) assert.equal((await change(admin, { newPassword })).status, 400);
     assert.equal((await change(admin, { currentPassword: 'incorrect' })).body.code, 'invalid_current_password');
     const changed = await change(admin);
     assert.equal(changed.status, 200);

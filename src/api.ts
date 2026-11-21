@@ -1,19 +1,17 @@
 export type Id = 'byob';
 export type VotingMethod = 'winner' | 'full' | 'custom';
-export type ParticipationMode = 'open' | 'restricted';
 export type Activity = { id: Id; title: string; status: 'waiting' | 'open' | 'closed'; published: boolean; started: boolean; revision: number; votingMethod?: VotingMethod; rankPoints?: number[] };
 export type AdminActivity = Activity & { resultsLocked: boolean; resultVisibility: 'private' | 'public' };
-export type EventInfo = { title: string; participationMode?: ParticipationMode };
+export type EventInfo = { title: string };
 export type AdminSettingsPatch = {
   event?: Partial<EventInfo>;
   activities?: (Pick<Activity, 'id' | 'revision'> & { title?: string; votingMethod?: VotingMethod; rankPoints?: number[]; resultVisibility?: 'private' | 'public' })[];
 };
 export type Participant = { id: string; name: string; submitted?: Record<Id, boolean> };
 export type Bootstrap = { mode?: 'ranked-byob'; event: EventInfo; activities: Activity[]; participant: Participant | null; admin: boolean };
-export type Candidate = { id: string; number: number; name: string; photoUrl: string | null };
-export type VoteAnswer = { participantId: string; name: string } & { ranking: string[] };
+export type Candidate = { id: string; number: number; name: string; description?: string; photoUrl: string | null };
 export type ByobResult = Candidate & { candidateId: string; rank: number } & ({ votes: number } | { points: number });
-export type AdminState = { mode?: 'ranked-byob'; participantUrl?: string; event: EventInfo; activities: AdminActivity[]; participants: Participant[]; rosterRevision: number; candidates: Candidate[]; photoCleanupPending: number; answers: { byob: VoteAnswer[] }; byobResults?: ByobResult[]; currentHistoryId?: string | null };
+export type AdminState = { mode?: 'ranked-byob'; participantUrl?: string; event: EventInfo; activities: AdminActivity[]; participants: Participant[]; submittedCount: number; rosterRevision: number; candidates: Candidate[]; photoCleanupPending: number; byobResults?: ByobResult[]; currentHistoryId?: string | null };
 export type VoteHistorySummary = { id: string; version: string; title: string; activityTitle: string; startedAt: string; savedAt: string; votingMethod: VotingMethod; rankPoints: number[]; ballotCount: number };
 export type VoteHistoryRecord = VoteHistorySummary & { rows: ByobResult[] };
 export type Detail = { activity: Activity; mine: { ranking?: string[] } | null; candidates?: Candidate[]; selectionCount?: number };

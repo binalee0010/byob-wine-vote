@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { DatabaseSync } from 'node:sqlite';
 import { client, createApp, TEST_PASSWORD } from './harness.mjs';
 
-const SUPERADMIN_EMAIL='superadmin@example.test', MEMBER_PASSWORD='Personal-member-password!';
+const SUPERADMIN_EMAIL='superadmin@example.test', MEMBER_PASSWORD='8';
 function memberClient(mf,ip) {
   const request=client(mf);let csrf;
   return async (path,method='GET',data,options={})=>{
@@ -35,7 +35,7 @@ test('configured owner requires the existing password; signup remains pending an
     assert.match(signed.body.member.workspaceSlug,/^[a-f0-9]{32}$/);
     assert.match(signed.headers.getSetCookie().find(v=>v.startsWith('__Host-byob_member=')),/HttpOnly; Secure; SameSite=Strict/);
     const row=await local.db.prepare('SELECT * FROM members WHERE id=?').bind(signed.body.member.id).first();
-    assert.match(row.password_hash,/^scrypt\$16384\$16\$1\$/);assert(!row.password_hash.includes(MEMBER_PASSWORD));
+    assert.match(row.password_hash,/^scrypt\$16384\$16\$1\$/);assert.notEqual(row.password_hash,MEMBER_PASSWORD);
     assert.equal(await local.db.prepare("SELECT name FROM sqlite_master WHERE name=?").bind(`${row.namespace}_event`).first(),null);
     assert.equal((await member('/api/admin/state')).status,401);
     assert.equal((await member('/api/members/requests')).status,403);
@@ -73,14 +73,14 @@ test('approval is conditional, personal passwords revoke all own sessions, and o
     assert.equal((await member('/api/admin/state')).status,200);
     assert.equal((await memberTwo('/api/members/login','POST',{email:address,password:TEST_PASSWORD})).status,401);
     assert.equal((await memberTwo('/api/members/login','POST',{email:address,password:MEMBER_PASSWORD})).status,200);
-    assert.equal((await member('/api/members/password','POST',{currentPassword:'wrong',newPassword:'Changed-personal-password!'})).body.code,'invalid_current_password');
-    const changed=await member('/api/members/password','POST',{currentPassword:MEMBER_PASSWORD,newPassword:'Changed-personal-password!'});assert.equal(changed.status,200);
+    assert.equal((await member('/api/members/password','POST',{currentPassword:'wrong',newPassword:'7412'})).body.code,'invalid_current_password');
+    const changed=await member('/api/members/password','POST',{currentPassword:MEMBER_PASSWORD,newPassword:'7412'});assert.equal(changed.status,200);
     assert.equal((await member('/api/members/session')).body.authenticated,false);
     assert.equal((await memberTwo('/api/members/session')).body.authenticated,false);
     assert.equal((await memberTwo('/api/admin/state')).status,401);
     assert.equal((await owner('/api/admin/state')).status,200);
     assert.equal((await member('/api/members/login','POST',{email:address,password:MEMBER_PASSWORD})).status,401);
-    assert.equal((await member('/api/members/login','POST',{email:address,password:'Changed-personal-password!'})).status,200);
+    assert.equal((await member('/api/members/login','POST',{email:address,password:'7412'})).status,200);
     const denied=await signup(rejected,'rejected@example.test');
     assert.equal((await owner(`/api/members/requests/${denied.body.member.id}/reject`,'POST',{})).status,200);
     assert.equal((await rejected('/api/members/session')).body.authenticated,false);

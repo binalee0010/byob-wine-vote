@@ -8,7 +8,7 @@ CREATE TABLE event (
   participation_mode TEXT NOT NULL DEFAULT 'open' CHECK(participation_mode IN ('open','restricted')),
   roster_revision INTEGER NOT NULL DEFAULT 0 CHECK(roster_revision>=0)
 );
-INSERT INTO event(id,title,starts_at,timezone) VALUES(1,'BYOB 와인 투표','','Asia/Seoul');
+INSERT INTO event(id,title,starts_at,timezone) VALUES(1,'새 투표','','Asia/Seoul');
 
 CREATE TABLE activities (
   id TEXT PRIMARY KEY CHECK(id='byob'),
@@ -23,7 +23,7 @@ CREATE TABLE activities (
   rank_points TEXT NOT NULL DEFAULT '[3,1]' CHECK(json_valid(rank_points) AND json_type(rank_points)='array' AND json_array_length(rank_points) BETWEEN 1 AND 100),
   full_reset_revision INTEGER NOT NULL DEFAULT 0
 );
-INSERT INTO activities(id,title) VALUES('byob','BYOB 와인 투표');
+INSERT INTO activities(id,title) VALUES('byob','새 투표');
 
 CREATE TABLE participants (id TEXT PRIMARY KEY,name TEXT NOT NULL,name_key TEXT NOT NULL UNIQUE);
 CREATE TABLE sessions (

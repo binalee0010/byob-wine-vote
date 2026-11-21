@@ -13,7 +13,7 @@ export function VoteHistoryDetail({ record, onBack, onSaved, onDeleted }: {
   const [photo, setPhoto] = useState<Candidate | null>(null);
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(record.title);
-  const [names, setNames] = useState(record.rows.map(({ id, name }) => ({ id, name })));
+  const [names, setNames] = useState(record.rows.map(({ id, name, description }) => ({ id, name, description: description ?? '' })));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [feedback, setFeedback] = useState('');
@@ -30,10 +30,14 @@ export function VoteHistoryDetail({ record, onBack, onSaved, onDeleted }: {
     wasEditing.current = editing;
   }, [editing]);
   const path = '/admin/history/' + encodeURIComponent(record.id);
-  const changedNames = names.filter(row => row.name !== record.rows.find(wine => wine.id === row.id)?.name);
+  const changedNames = names.flatMap(row => {
+    const original = record.rows.find(candidate => candidate.id === row.id);
+    const descriptionChanged = row.description !== (original?.description ?? '');
+    return row.name === original?.name && !descriptionChanged ? [] : [{ id: row.id, name: row.name, ...(descriptionChanged ? { description: row.description } : {}) }];
+  });
   const dirty = title !== record.title || changedNames.length > 0;
   function resetDraft(next = record) {
-    setTitle(next.title); setNames(next.rows.map(({ id, name }) => ({ id, name })));
+    setTitle(next.title); setNames(next.rows.map(({ id, name, description }) => ({ id, name, description: description ?? '' })));
   }
   function report(failure: unknown) {
     const changed = failure instanceof ApiError && failure.code === 'history_changed';
@@ -77,7 +81,7 @@ export function VoteHistoryDetail({ record, onBack, onSaved, onDeleted }: {
     <p>{record.activityTitle}</p>
     <p className="muted">시작 {formatDate.format(new Date(record.startedAt))} · 저장 {formatDate.format(new Date(record.savedAt))}</p>
     <p className="muted">{votingMethodInfo[record.votingMethod].label} · 총투표 {record.ballotCount}건</p>
-    {record.votingMethod === 'winner' && <p className="muted">한 와인에 1표</p>}
+    {record.votingMethod === 'winner' && <p className="muted">후보 하나에 1표</p>}
     {record.votingMethod === 'full' && <p className="muted">1위 {record.rows.length}점부터 마지막 순위 1점까지</p>}
     {record.votingMethod === 'custom' && <p className="muted">{record.rankPoints.map((points, place) => `${place + 1}위 ${points.toLocaleString('ko-KR')}점`).join(' · ')}</p>}
     <Notice error>{error}</Notice><Notice>{feedback}</Notice>
@@ -91,10 +95,10 @@ export function VoteHistoryDetail({ record, onBack, onSaved, onDeleted }: {
       }} />
     </div>
     {editing && <form className="history-edit-form" onSubmit={event => void save(event)}>
-      <label>모임명<input ref={titleInput} value={title} maxLength={160} required disabled={busy} onChange={event => setTitle(event.target.value)} /></label>
-      <div className="field-grid">{names.map((wine, index) => <label key={wine.id}>와인 {record.rows[index].number} 이름
+      <label>투표 제목<input ref={titleInput} value={title} maxLength={160} required disabled={busy} onChange={event => setTitle(event.target.value)} /></label>
+      <div className="field-grid">{names.map((wine, index) => <div key={wine.id}><label>후보 {record.rows[index].number} 이름
         <input value={wine.name} maxLength={160} required disabled={busy} onChange={event => setNames(current => current.map(row => row.id === wine.id ? { ...row, name: event.target.value } : row))} />
-      </label>)}</div>
+      </label><label>설명 (선택)<textarea value={wine.description} maxLength={2000} rows={3} disabled={busy} onChange={event => setNames(current => current.map(row => row.id === wine.id ? { ...row, description: event.target.value } : row))}/></label></div>)}</div>
       <div className="row"><button type="submit" className="primary" disabled={busy || !dirty || !title.trim() || names.some(wine => !wine.name.trim())}>{busy ? '저장 중…' : '변경사항 저장'}</button>
         <button type="button" disabled={busy} onClick={() => { resetDraft(); setEditing(false); setError(''); }}>수정 취소</button></div>
     </form>}

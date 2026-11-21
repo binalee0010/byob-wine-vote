@@ -188,9 +188,9 @@ export default function RankedBallot({ candidates, ranking, submitted, disabled,
 
   const sourceIndex = draggedId ? ranking.indexOf(draggedId) : -1;
   return <fieldset className="ranked-ballot">
-    <legend>와인 순위 정렬</legend>
+    <legend>후보 순위 정렬</legend>
     {!submitted && <p className="rank-draft">미제출 초안 · 처음에는 등록 순서로 표시됩니다.</p>}
-    <p className="muted">{ranking.length > 1 ? '끌어서 옮기거나 ↑↓ 버튼을 눌러 가장 마음에 든 와인을 맨 위로 놓아 주세요. 터치 화면에서는 손잡이를 끌 수 있어요.' : '와인을 확인한 뒤 순위를 제출해 주세요.'}</p>
+    <p className="muted">{ranking.length > 1 ? '끌어서 옮기거나 ↑↓ 버튼을 눌러 가장 마음에 든 후보를 맨 위로 놓아 주세요. 터치 화면에서는 손잡이를 끌 수 있어요.' : '후보를 확인한 뒤 순위를 제출해 주세요.'}</p>
     <p className="rank-announcement" role="status">{announcement}</p>
     <ol className={draggedId ? 'rank-list rank-preview' : 'rank-list'} ref={list} role="list" onClickCapture={event => {
       if (suppressClick.current && event.detail !== 0) {
@@ -211,7 +211,7 @@ export default function RankedBallot({ candidates, ranking, submitted, disabled,
             <div><strong>{index + 1}위</strong><small>{ranking.length - index}점</small></div>
           </div>
           <CandidatePhoto candidate={candidate} onPhoto={onPhoto} compact draggable={false} />
-          <div className="rank-wine"><small>와인 {candidate.number}</small><strong>{candidate.name}</strong></div>
+          <div className="rank-wine"><small>후보 {candidate.number}</small><strong>{candidate.name}</strong></div>
           {ranking.length > 1 && <div className="rank-actions">
             <button type="button" aria-label={candidate.name + ' 위로 이동'} disabled={disabled || index === 0} onClick={e => moveWithButton(e, candidate, index - 1)}>↑</button>
             <button type="button" aria-label={candidate.name + ' 아래로 이동'} disabled={disabled || index === ranking.length - 1} onClick={e => moveWithButton(e, candidate, index + 1)}>↓</button>

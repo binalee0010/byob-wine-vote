@@ -20,6 +20,7 @@ test('rendered participant mismatch cannot overwrite another participant ballot'
       ranking: ids, revision: 0, expectedParticipantId: firstId
     })).status, 200);
     const before = (await admin('/api/admin/state')).body.answers;
+    const originalBallots = (await local.db.prepare('SELECT * FROM answers ORDER BY participant_id').all()).results;
     const joinedB = await person('/api/session', 'POST', { name: '현재 쿠키 이름' });
     const secondId = joinedB.body.participant.id;
     assert.notEqual(firstId, secondId);
@@ -30,6 +31,7 @@ test('rendered participant mismatch cannot overwrite another participant ballot'
     assert.equal(stale.body.code, 'participant_changed');
     assert.equal((await person('/api/activities/byob')).body.mine, null);
     assert.deepEqual((await admin('/api/admin/state')).body.answers, before);
+    assert.deepEqual((await local.db.prepare('SELECT * FROM answers ORDER BY participant_id').all()).results, originalBallots);
     for (const invalid of [null, '', 1, 'x'.repeat(81)]) {
       assert.equal((await person('/api/activities/byob/answer', 'PUT', {
         ranking: ids, revision: 0, expectedParticipantId: invalid

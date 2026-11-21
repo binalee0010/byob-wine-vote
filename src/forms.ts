@@ -14,8 +14,8 @@ export function useServerDraft(serverValue: string) {
   return [draft, setDraft] as const;
 }
 export function passwordChangeError(current: string, next: string, confirmation: string) {
-  if (!current || current.length > 1024) return '현재 비밀번호를 입력해 주세요.';
-  if (next.length < 10 || next.length > 1024) return '새 비밀번호는 10자 이상 1,024자 이하로 입력해 주세요.';
+  if (!current) return '현재 비밀번호를 입력해 주세요.';
+  if (!next) return '새 비밀번호를 입력해 주세요.';
   if (next !== confirmation) return '새 비밀번호와 확인 입력이 일치하지 않습니다.';
   return '';
 }
@@ -42,12 +42,16 @@ export function selectCustomRank(ranking: string[], candidateId: string, place: 
   return next;
 }
 
-export function candidateNameChanges(candidates: { id: string; name: string }[], fields: FormData) {
+export function candidateNameChanges(candidates: { id: string; name: string; description?: string }[], fields: FormData) {
   return candidates.flatMap(candidate => {
     const input = fields.get(candidate.id);
     if (typeof input !== 'string') return [];
-    const name = input.normalize('NFKC').trim();
-    return name === candidate.name ? [] : [{ id: candidate.id, name }];
+    const name = input === candidate.name ? candidate.name : input.normalize('NFKC').trim();
+    const descriptionInput = fields.get('description:' + candidate.id);
+    const originalDescription = candidate.description ?? '';
+    const description = typeof descriptionInput === 'string' && descriptionInput !== originalDescription ? descriptionInput.trim() : originalDescription;
+    const changedDescription = description !== (candidate.description ?? '');
+    return name === candidate.name && !changedDescription ? [] : [{ id: candidate.id, name, ...(changedDescription ? { description } : {}) }];
   });
 }
 
@@ -63,7 +67,6 @@ export function progressFieldKey(activity: Pick<Activity, 'id' | 'revision'>, fi
 export function progressServerFields(state: SettingsState) {
   const fields: Record<string, string> = {
     'event:title': state.event.title,
-    'event:participationMode': state.event.participationMode ?? 'open',
   };
   for (const activity of state.activities) {
     fields[progressFieldKey(activity, 'title')] = activity.title;
@@ -111,11 +114,6 @@ export function progressSettingsUpdate(state: SettingsState, server: Record<stri
   const patch: AdminSettingsPatch = {};
   const event: NonNullable<AdminSettingsPatch['event']> = {};
   if (changes['event:title'] !== undefined) event.title = changes['event:title'];
-  const participationMode = changes['event:participationMode'];
-  if (participationMode !== undefined) {
-    if (participationMode !== 'open' && participationMode !== 'restricted') throw new Error('참가 방식을 확인해 주세요.');
-    event.participationMode = participationMode;
-  }
   if (Object.keys(event).length) patch.event = event;
   const activities = state.activities.flatMap<NonNullable<AdminSettingsPatch['activities']>[number]>(activity => {
     const title = changes[progressFieldKey(activity, 'title')];

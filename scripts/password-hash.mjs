@@ -21,7 +21,7 @@ const ask = prompt => {
 };
 let hash;
 try {
-  const password = await ask('새 관리자 비밀번호 (10자 이상, 입력 숨김): ');
+  const password = await ask('새 관리자 비밀번호 (입력 숨김): ');
   if (password !== await ask('비밀번호 확인: ')) throw new Error('비밀번호가 일치하지 않습니다.');
   hash = await hashPassword(password);
 } finally {

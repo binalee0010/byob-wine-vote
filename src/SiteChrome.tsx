@@ -8,10 +8,11 @@ export function SiteHeader({ title, children, onHome }: { title: string; childre
   </header>;
 }
 
-export function AdminHeader({ title, participantUrl, onSettings, onLogout, busy }: { title: string; participantUrl?: string; onSettings?: () => void; onLogout?: () => void; busy?: boolean }) {
+export function AdminHeader({ title, participantUrl, pollListUrl, onSettings, onLogout, busy }: { title: string; participantUrl?: string; pollListUrl?: string; onSettings?: () => void; onLogout?: () => void; busy?: boolean }) {
   return <header className="admin-header">
     <a className="admin-site-title" href="/admin">{title}<span>투표 관리</span></a>
     {(onSettings || onLogout) && <div className="admin-header-actions">
+      {pollListUrl && <a className="header-link" href={pollListUrl}>내 투표 목록</a>}
       {participantUrl && <a className="header-link" href={participantUrl} target="_blank" rel="noopener noreferrer">참가자 화면 보기 ↗</a>}
       {onSettings ? <button type="button" disabled={busy} onClick={onSettings} aria-haspopup="dialog">설정</button> : <button type="button" disabled={busy} onClick={onLogout}>관리자 로그아웃</button>}
     </div>}

@@ -72,11 +72,10 @@ test('winner and top-two voting validate ballots, share the correct totals, and 
     assert.equal((await anon(config, 'PATCH', { votingMethod: 'winner', revision: 0 })).status, 401);
     assert.equal((await admin(config, 'PATCH', { votingMethod: 'winner', revision: 0 }, { headers: { Origin: 'https://evil.test' } })).status, 403);
     assert.equal((await admin(config, 'PATCH', { votingMethod: 'unknown', revision: 0 })).body.code, 'invalid_voting_method');
-    const registration = await admin('/api/admin/participants', 'POST', { names: ['방식 검증 첫째', '방식 검증 둘째'] });
-    assert.equal(registration.status, 200);
-    const participants = registration.body.created.map(() => client(local.mf));
-    for (const [i, person] of registration.body.created.entries()) {
-      assert.equal((await participants[i]('/api/session', 'POST', { name: person.name })).status, 200);
+    const names = ['방식 검증 첫째', '방식 검증 둘째'];
+    const participants = names.map(() => client(local.mf));
+    for (const [i, name] of names.entries()) {
+      assert.equal((await participants[i]('/api/session', 'POST', { name })).status, 200);
     }
     const [first, second] = participants;
     const a = await addName(admin, '검증 A');
@@ -113,12 +112,12 @@ test('winner and top-two voting validate ballots, share the correct totals, and 
     const winnerResult = await anon(results);
     assert.equal(winnerResult.body.votingMethod, 'winner');
     assert.deepEqual(winnerResult.body.rows, winnerState.byobResults);
-    assert(!JSON.stringify(winnerResult.body).includes(registration.body.created[0].name));
+    assert(!JSON.stringify(winnerResult.body).includes(names[0]));
 
     assert.equal((await admin(`${config}/reset`, 'POST', { confirm: 'reset', expectedRevision: 0 })).status, 200);
     const reset = await getAdmin(admin);
     assert.equal(reset.activities[0].votingMethod, 'winner');
-    assert.deepEqual(reset.participants, winnerState.participants);
+    assert.deepEqual(reset.participants, winnerState.participants.map(person => ({...person,submitted:{byob:false}})));
     assert.deepEqual(reset.candidates, winnerState.candidates);
     assert.deepEqual(reset.answers.byob, []);
     assert.equal((await admin(config, 'PATCH', { votingMethod: 'top2', revision: 0 })).body.code, 'revision_changed');
@@ -241,7 +240,7 @@ test('ranked names join freely and concurrent normalized names share one ballot 
     assert.notEqual(one.headers.get('set-cookie'), two.headers.get('set-cookie'));
     assert.equal((await admin('/api/admin/login', 'POST', { password: TEST_PASSWORD })).status, 200);
     const joined = await getAdmin(admin);
-    assert.deepEqual(joined.participants, [one.body.participant]);
+    assert.deepEqual(joined.participants, [{...one.body.participant,submitted:{byob:false}}]);
     assert.equal(joined.rosterRevision, 1);
     const a = await upload(admin, '자유 참여 A'), b = await upload(admin, '자유 참여 B');
     assert.equal((await admin(config, 'PATCH', { votingMethod: 'winner', revision: 0 })).status, 200);

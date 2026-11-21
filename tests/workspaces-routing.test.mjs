@@ -94,8 +94,8 @@ test('approved members isolate ballots, photos, admin routes, archives, reset an
     assert.equal((await answer(pathA, [ca.body.candidate.id], pb.body.participant.id)).body.code, 'participant_changed');
     assert.equal((await answer(pathA, [ca.body.candidate.id], pa.body.participant.id)).status, 200);
     assert.equal((await answer(pathB, [cb.body.candidate.id], pb.body.participant.id)).status, 200);
-    assert.deepEqual((await state(a)).answers.byob[0].ranking, [ca.body.candidate.id]);
-    assert.deepEqual((await state(b)).answers.byob[0].ranking, [cb.body.candidate.id]);
+    assert.deepEqual((await state(a)).answers.byob, [{participantId:pa.body.participant.id}]);
+    assert.deepEqual((await state(b)).answers.byob, [{participantId:pb.body.participant.id}]);
     assert.equal((await anonymous(pathA + `/photos/${cb.body.candidate.id}`)).status, 404);
     assert.equal((await anonymous(cb.body.candidate.photoUrl)).status, 200);
     assert.equal((await a('/api/admin/activities/byob/state', 'POST', { action: 'close', revision: 0 })).status, 200);
@@ -173,7 +173,7 @@ test('legacy owner tables, existing participant cookie, credentials, archives an
       local.db.prepare("INSERT INTO participants VALUES('old-person','Preserved participant','preserved participant')"),
       local.db.prepare("INSERT INTO sessions VALUES(?,'admin',NULL,?,?)").bind(digest(oldAdmin), Date.now() + 3600000, version),
       local.db.prepare("INSERT INTO sessions VALUES(?,'participant','old-person',?,NULL)").bind(digest(oldPerson), Date.now() + 3600000),
-      local.db.prepare("INSERT INTO candidates VALUES('old-wine',1,'Preserved wine','candidates/old-photo','image/png','old-upload')"),
+      local.db.prepare("INSERT INTO candidates(id,number,name,object_key,content_type,request_id) VALUES('old-wine',1,'Preserved wine','candidates/old-photo','image/png','old-upload')"),
       local.db.prepare("UPDATE activities SET status='open',started_at='2026-01-01' WHERE id='byob'"),
       local.db.prepare("INSERT INTO answers VALUES('byob','old-person',?,?)").bind('{"ranking":["old-wine"]}', '2026-01-01'),
       local.db.prepare("UPDATE activities SET status='closed',published=1 WHERE id='byob'"),

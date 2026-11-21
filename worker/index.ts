@@ -17,6 +17,7 @@ export interface Env {
   SMTP_CONFIG?: string;
   WORKSPACE?: Workspace;
   MEMBER_SESSION?: MemberSession;
+  MEMBER_DB?: D1Database;
 }
 
 type ActivityId = 'byob';
@@ -24,13 +25,12 @@ type VotingMethod = 'winner' | 'top2' | 'full';
 type ParticipationMode = 'open' | 'restricted';
 type Activity = { id: ActivityId; title: string; status: 'waiting' | 'open' | 'closed'; published: number; publish_on_close: number; started_at: string | null; revision: number; results_locked: number; voting_method?: VotingMethod; rank_points?: string };
 type Participant = { id: string; name: string };
-type Candidate = { id: string; number: number; name: string; object_key: string; content_type: string; request_id: string };
+type Candidate = { id: string; number: number; name: string; description?: string; object_key: string; content_type: string; request_id: string };
 type RankedCandidate = Candidate & { score: number };
 type HistoryCandidate = Omit<RankedCandidate, 'request_id'>;
 type HistorySummary = { title: string; activityTitle: string; startedAt: string; votingMethod: VotingMethod; rankPoints: number[]; ballotCount: number };
 type HistoryRow = { id: string; saved_at: string; snapshot: string };
 type Session = { role: 'admin' | 'participant'; participant_id: string | null; token_hash: string };
-type AnswerRow = { participant_id: string; name: string; payload: string };
 const ids: ActivityId[] = ['byob'];
 const encoder = new TextEncoder();
 const MAX_PHOTO = 5 * 1024 * 1024;
@@ -39,15 +39,17 @@ function memberAuthorization(env: Env) {
   if (!member || !/^[a-f0-9]{64}$/.test(member.tokenHash)) return '0';
   const namespace = env.WORKSPACE?.namespace;
   if (namespace && !/^m_[a-f0-9]{32}$/.test(namespace)) throw new Error('Invalid internal workspace');
+  const owner = env.WORKSPACE?.memberId;
+  if (owner && owner !== 'owner' && !/^[a-f0-9]{32}$/.test(owner)) throw new Error('Invalid internal workspace owner');
   return `EXISTS(SELECT 1 FROM member_sessions ms JOIN members m ON m.id=ms.member_id
     WHERE ms.token_hash='${member.tokenHash}' AND ms.expires_at>${Date.now()} AND m.status='approved'
     AND ((m.role='member' AND ms.credential_version=m.credential_version)
-      OR (m.role='owner' AND EXISTS(SELECT 1 FROM admin_credentials WHERE id=1 AND version=ms.credential_version)))
-    AND m.namespace ${namespace ? `='${namespace}'` : 'IS NULL'})`;
+      OR m.role='owner')
+    AND ${owner ? `m.id='${owner}'` : `m.namespace ${namespace ? `='${namespace}'` : 'IS NULL'}`})`;
 }
 function activeAdmin(env: Env) {
   const local = "EXISTS(SELECT 1 FROM sessions WHERE token_hash=? AND role='admin' AND expires_at>?)";
-  return env.SUPERADMIN_EMAIL ? `${local} AND ${memberAuthorization(env)}` : local;
+  return env.SUPERADMIN_EMAIL ? `(?='${env.MEMBER_SESSION?.tokenHash ?? ''}' AND ?>0) AND ${memberAuthorization(env)}` : local;
 }
 const activeParticipant = "EXISTS(SELECT 1 FROM sessions WHERE token_hash=? AND role='participant' AND participant_id=? AND expires_at>?)";
 const cookieNames = { admin: '__Host-byob_admin', participant: '__Host-byob_participant' };
@@ -92,7 +94,7 @@ function activityPublic(a: Activity) {
     votingMethod: publicVotingMethod(a.voting_method), rankPoints: rankPoints(a) };
 }
 function apiPath(env: Env, path: string) { return `${env.WORKSPACE ? `/v/${env.WORKSPACE.slug}` : ''}/api${path}`; }
-function candidatePublic(c: Pick<Candidate, 'id' | 'number' | 'name' | 'object_key'>, env: Env) { return { id: c.id, number: c.number, name: c.name, photoUrl: c.object_key ? apiPath(env, `/photos/${c.id}`) : null }; }
+function candidatePublic(c: Pick<Candidate, 'id' | 'number' | 'name' | 'description' | 'object_key'>, env: Env) { return { id: c.id, number: c.number, name: c.name, description: c.description ?? '', photoUrl: c.object_key ? apiPath(env, `/photos/${c.id}`) : null }; }
 async function body(request: Request, max = 32768): Promise<Record<string, unknown>> {
   if (!request.headers.get('content-type')?.startsWith('application/json')) fail(415, 'JSON 요청이 필요합니다.');
   const raw = await boundedBody(request, max);
@@ -120,8 +122,9 @@ function sessionCookie(env: Env, role: 'admin' | 'participant', token: string, s
 async function session(request: Request, env: Env, role: 'admin' | 'participant'): Promise<Session | null> {
   if (role === 'admin' && env.SUPERADMIN_EMAIL) {
     const member = env.MEMBER_SESSION ?? await getMemberSession(request, env);
-    if (member?.status !== 'approved' || member.namespace !== (env.WORKSPACE?.namespace ?? null)) return null;
-    env = { ...env, MEMBER_SESSION: member };
+    if (member?.status !== 'approved' || (env.WORKSPACE?.memberId ? member.id !== env.WORKSPACE.memberId : member.namespace !== (env.WORKSPACE?.namespace ?? null))) return null;
+    const valid = await env.DB.prepare(`SELECT 1 WHERE ${memberAuthorization({ ...env, MEMBER_SESSION: member })}`).first();
+    return valid ? { role: 'admin', participant_id: null, token_hash: member.tokenHash } : null;
   }
   const token = readCookie(request, cookieName(env, role)); if (!/^[a-f0-9]{64}$/.test(token)) return null;
   const version=role==='admin'?await credentialVersion(env):null;
@@ -219,7 +222,7 @@ export async function revokeWorkspaceAdmin(request: Request, env: Env, workspace
 async function changePassword(request:Request,env:Env,admin:Session) {
   await rateLimit(request,env,'admin-password',8);
   const data=await body(request);
-  if(typeof data.currentPassword!=='string' || !data.currentPassword.length || data.currentPassword.length>1024 || typeof data.newPassword!=='string' || data.newPassword.length<10 || data.newPassword.length>1024)fail(400,'현재 비밀번호와 10~1024자의 새 비밀번호를 입력해 주세요.');
+  if(typeof data.currentPassword!=='string' || !data.currentPassword.length || typeof data.newPassword!=='string' || !data.newPassword.length)fail(400,'현재 비밀번호와 새 비밀번호를 입력해 주세요.');
   const response=await passwordService(env,'/change',{currentPassword:data.currentPassword,newPassword:data.newPassword,sessionHash:admin.token_hash});
   if(response.status===403)fail(403,'현재 비밀번호가 일치하지 않습니다.','invalid_current_password');
   if(response.status===409)fail(409,'비밀번호 또는 세션이 변경되었습니다. 다시 로그인해 주세요.','credential_changed');
@@ -232,10 +235,7 @@ function activityRows(env: Env) {
 }
 async function candidates(env: Env) { return (await env.DB.prepare('SELECT * FROM candidates ORDER BY number,id').all<Candidate>()).results; }
 async function eventInfo(env: Env) {
-  const e = await env.DB.prepare('SELECT title,starts_at AS startsAt,timezone,participation_mode AS participationMode FROM event WHERE id=1').first(); return e;
-}
-function answerRows(env: Env, id: ActivityId) {
-  return env.DB.prepare('SELECT a.participant_id,p.name,a.payload FROM answers a JOIN participants p ON p.id=a.participant_id WHERE a.activity_id=? ORDER BY p.name,p.id').bind(id);
+  return env.DB.prepare("SELECT title,starts_at AS startsAt,timezone,'open' AS participationMode FROM event WHERE id=1").first();
 }
 function rankRows<T>(rows: T[], value: (row: T) => number, descending = false) {
   const sorted = [...rows].sort((a, b) => descending ? value(b) - value(a) : value(a) - value(b)); let last: number | undefined; let rank = 0;
@@ -291,15 +291,16 @@ async function changeHistory(request: Request, env: Env, admin: Session, id: str
   } else {
     const title = text(data.title, '모임 이름', 160);
     const snapshot = JSON.parse(row.snapshot) as HistorySummary & { rows: HistoryCandidate[] };
-    if (!Array.isArray(data.names) || data.names.length > snapshot.rows.length) fail(400, '와인 이름을 확인해 주세요.');
-    const names = new Map<string, string>();
+    if (!Array.isArray(data.names) || data.names.length > snapshot.rows.length) fail(400, '후보 이름을 확인해 주세요.');
+    const names = new Map<string, {name:string;description?:string}>();
     for (const entry of data.names) {
       if (!entry || typeof entry !== 'object' || typeof entry.id !== 'string' || names.has(entry.id)
-        || !snapshot.rows.some(candidate => candidate.id === entry.id)) fail(400, '기록에 있는 와인을 확인해 주세요.');
-      names.set(entry.id, text(entry.name, '와인 이름', 160));
+        || !snapshot.rows.some(candidate => candidate.id === entry.id)) fail(400, '기록에 있는 후보를 확인해 주세요.');
+      const original = snapshot.rows.find(candidate => candidate.id === entry.id)!;
+      names.set(entry.id, {name:entry.name === original.name ? original.name : text(entry.name, '후보 이름', 160),...(entry.description === undefined ? {} : {description:entry.description === original.description ? original.description : text(entry.description, '후보 설명', 2000, false)})});
     }
     snapshot.title = title;
-    snapshot.rows = snapshot.rows.map(candidate => names.has(candidate.id) ? { ...candidate, name: names.get(candidate.id)! } : candidate);
+    snapshot.rows = snapshot.rows.map(candidate => names.has(candidate.id) ? { ...candidate, ...names.get(candidate.id)! } : candidate);
     changed = await env.DB.prepare(`UPDATE vote_history SET snapshot=? WHERE id=? AND snapshot=? AND ${activeAdmin(env)}`)
       .bind(JSON.stringify(snapshot), id, row.snapshot, admin.token_hash, Date.now()).run();
   }
@@ -327,7 +328,7 @@ async function saveHistory(request: Request, env: Env, admin: Session) {
     SELECT ?,a.revision,?,json_object(
       'title',e.title,'activityTitle',a.title,'startedAt',a.started_at,'votingMethod',a.voting_method,
       'rankPoints',json(a.rank_points),'ballotCount',(SELECT count(*) FROM answers WHERE activity_id='byob'),
-      'rows',(SELECT json_group_array(json_object('id',c.id,'number',c.number,'name',c.name,
+      'rows',(SELECT json_group_array(json_object('id',c.id,'number',c.number,'name',c.name,'description',c.description,
         'object_key',c.object_key,'content_type',c.content_type,'score',c.score)) FROM (${rankedCandidateSql}) c)
     )
     FROM activities a CROSS JOIN event e WHERE a.id='byob' AND e.id=1 AND a.status='closed'
@@ -340,7 +341,7 @@ async function saveHistory(request: Request, env: Env, admin: Session) {
     FROM activities a CROSS JOIN event e LEFT JOIN vote_history h ON h.revision=a.revision
     WHERE a.id='byob' AND e.id=1`).first<{ revision: number; status: string; roster_revision: number; id: string | null }>();
   if (current?.revision !== revision) fail(409, '이벤트 회차가 바뀌었습니다. 화면을 새로 고쳐 주세요.', 'revision_changed');
-  if (current.roster_revision !== rosterRevision) fail(409, '참가자 명단이 바뀌었습니다. 다시 확인해 주세요.', 'roster_changed');
+  if (current.roster_revision !== rosterRevision) fail(409, '참여 현황이 바뀌었습니다. 다시 확인해 주세요.', 'roster_changed');
   if (current.status === 'closed' && current.id) return json({ ok: true, id: current.id, reused: true });
   return fail(409, '마감한 뒤 투표 기록을 저장할 수 있습니다.', 'history_not_closed');
 }
@@ -424,11 +425,11 @@ function participantUrl(request: Request, env: Env) {
   } catch { return fail(503, '참가 주소 설정을 확인해 주세요.', 'origin_unconfigured'); }
 }
 async function adminState(request: Request, env: Env) {
-  const [event, activities, participants, candidateRows, cleanup, answers] = await env.DB.batch([
-    env.DB.prepare('SELECT title,starts_at AS startsAt,timezone,participation_mode AS participationMode,roster_revision AS rosterRevision FROM event WHERE id=1'),
+  const [event, activities, participants, candidateRows, cleanup, submissions] = await env.DB.batch([
+    env.DB.prepare("SELECT title,starts_at AS startsAt,timezone,'open' AS participationMode,roster_revision AS rosterRevision FROM event WHERE id=1"),
     env.DB.prepare("SELECT a.*,h.id AS current_history_id FROM activities a LEFT JOIN vote_history h ON h.revision=a.revision WHERE a.id='byob'"),
-    env.DB.prepare('SELECT id,name FROM participants ORDER BY name,id'),
-    env.DB.prepare(rankedCandidateSql), candidatePhotoCleanupCount(env), answerRows(env, 'byob')
+    env.DB.prepare("SELECT p.id,p.name,EXISTS(SELECT 1 FROM answers a WHERE a.activity_id='byob' AND a.participant_id=p.id) AS submitted FROM participants p JOIN participant_entries e ON e.participant_id=p.id ORDER BY p.name,p.id"),
+    env.DB.prepare(rankedCandidateSql), candidatePhotoCleanupCount(env), env.DB.prepare("SELECT count(*) AS count FROM answers WHERE activity_id='byob'")
   ]);
   const { rosterRevision, ...metadata } = event.results[0] as { title: string; startsAt: string; timezone: string; participationMode: ParticipationMode; rosterRevision: number };
   const activityList = activities.results as (Activity & { current_history_id: string | null })[];
@@ -436,8 +437,10 @@ async function adminState(request: Request, env: Env) {
     mode: 'ranked-byob', event: metadata, rosterRevision, participantUrl: participantUrl(request, env),
     photoCleanupPending: (cleanup.results[0] as { count: number }).count,
     activities: activityList.map(a => ({ ...activityPublic(a), resultVisibility: a.publish_on_close ? 'public' : 'private', resultsLocked: Boolean(a.results_locked) })),
-    participants: participants.results, candidates: (candidateRows.results as Candidate[]).map(c => candidatePublic(c, env)),
-    answers: { byob: (answers.results as AnswerRow[]).map(row => ({ participantId: row.participant_id, name: row.name, ranking: JSON.parse(row.payload).ranking })) },
+    participants: (participants.results as {id:string;name:string;submitted:number}[]).map(person => ({id:person.id,name:person.name,submitted:{byob:Boolean(person.submitted)}})),
+    submittedCount: (submissions.results[0] as {count:number}).count,
+    answers: {byob:(participants.results as {id:string;submitted:number}[]).filter(person => person.submitted).map(person => ({participantId:person.id}))},
+    candidates: (candidateRows.results as Candidate[]).map(c => candidatePublic(c, env)),
     currentHistoryId: activityList[0]?.current_history_id ?? null,
     byobResults: rankedResults(candidateRows.results as RankedCandidate[], activityList[0]?.voting_method ?? 'full', env)
   });
@@ -501,7 +504,6 @@ async function configure(request: Request, env: Env, id: ActivityId, admin: Sess
 async function updateSettings(request: Request, env: Env, admin: Session) {
   const data = await body(request);
   let title: string | null = null, startsAt: string | null = null;
-  let participationMode: ParticipationMode | null = null;
   if (data.event !== undefined) {
     if (!data.event || typeof data.event !== 'object' || Array.isArray(data.event)) fail(400, '행사 설정을 확인해 주세요.');
     const event = data.event as Record<string, unknown>;
@@ -509,8 +511,7 @@ async function updateSettings(request: Request, env: Env, admin: Session) {
     if (event.title !== undefined) title = text(event.title, '행사명', 160);
     if (event.startsAt !== undefined) startsAt = eventStartTime(event.startsAt);
     if (event.participationMode !== undefined) {
-      if (event.participationMode !== 'open' && event.participationMode !== 'restricted') fail(400, '참가 방식을 확인해 주세요.', 'invalid_participation_mode');
-      participationMode = event.participationMode;
+      if (event.participationMode !== 'open') fail(400, '이름을 입력해 자유롭게 참여하는 투표입니다.', 'invalid_participation_mode');
     }
   }
   const entries = data.activities === undefined ? [] : data.activities;
@@ -530,7 +531,8 @@ async function updateSettings(request: Request, env: Env, admin: Session) {
     return { id, revision: revisionNumber(entry.revision), publishOnClose, ...settings };
   });
   if (new Set(edits.map(edit => edit.id)).size !== edits.length) fail(400, '같은 이벤트가 두 번 포함되어 있습니다.');
-  const saveEvent = title !== null || startsAt !== null || participationMode !== null;
+  const saveEvent = title !== null || startsAt !== null;
+  if (!saveEvent && !edits.length && (data.event as Record<string, unknown> | undefined)?.participationMode === 'open') return ok();
   if (!saveEvent && !edits.length) fail(400, '저장할 설정을 확인해 주세요.');
   const encoded = JSON.stringify(edits);
   const pending = `WITH edits AS MATERIALIZED (
@@ -551,9 +553,9 @@ async function updateSettings(request: Request, env: Env, admin: Session) {
   const now = Date.now();
   const statements: D1PreparedStatement[] = [];
   if (saveEvent) statements.push(env.DB.prepare(`${pending}
-    UPDATE event SET title=coalesce(?,title),starts_at=coalesce(?,starts_at),participation_mode=coalesce(?,participation_mode)
+    UPDATE event SET title=coalesce(?,title),starts_at=coalesce(?,starts_at)
     WHERE id=1 AND ${guard} RETURNING id`)
-    .bind(encoded, title, startsAt, participationMode, admin.token_hash, now));
+    .bind(encoded, title, startsAt, admin.token_hash, now));
   if (edits.length) statements.push(env.DB.prepare(`${pending}
     UPDATE activities SET title=coalesce((SELECT e.title FROM edits e WHERE e.id=activities.id),title),
       publish_on_close=coalesce((SELECT e.publish_on_close FROM edits e WHERE e.id=activities.id),publish_on_close),
@@ -637,50 +639,9 @@ async function resetRankedVote(request: Request, env: Env, admin: Session) {
     await requireAdmin(request, env);
     sameRevision(await activity(env, 'byob'), revision);
     await requireExclusiveRoster(env, rosterGuard);
-    fail(409, '참가자 명단이 바뀌었습니다. 다시 확인해 주세요.', 'roster_changed');
+    fail(409, '참여 현황이 바뀌었습니다. 다시 확인해 주세요.', 'roster_changed');
   }
   return json({ ok: true, revision: updated.revision, cleanupPending: await retryCandidatePhotoCleanup(env) });
-}
-async function addParticipants(request: Request, env: Env, admin: Session) {
-  const data = await body(request); if (!Array.isArray(data.names) || data.names.length < 1 || data.names.length > 500) fail(400, '이름을 1~500개 입력해 주세요.');
-  const created: Participant[] = [], duplicates: string[] = [], invalid: string[] = [];
-  for (const value of data.names) { let name: string; try { name = normalizeName(value); } catch { invalid.push(typeof value === 'string' ? value.slice(0, 80) : ''); continue; }
-    const id = crypto.randomUUID();
-    const inserted = await env.DB.prepare(`INSERT INTO participants(id,name,name_key) SELECT ?,?,? WHERE ${activeAdmin(env)} ON CONFLICT(name_key) DO NOTHING`)
-      .bind(id, name, nameKey(name), admin.token_hash, Date.now()).run();
-    if (inserted.meta.changes) created.push({ id, name });
-    else { await requireAdmin(request, env); duplicates.push(name); }
-  }
-  return json({ created, duplicates, invalid });
-}
-async function renameParticipant(request: Request, env: Env, id: string, admin: Session) {
-  const data = await body(request), name = normalizeName(data.name);
-  const updated = await env.DB.prepare(`UPDATE participants SET name=?,name_key=? WHERE id=? AND ${activeAdmin(env)}`)
-    .bind(name, nameKey(name), id, admin.token_hash, Date.now()).run();
-  if (!updated.meta.changes) {
-    await requireAdmin(request, env);
-    fail(404, '참가자가 없습니다.');
-  }
-  return ok();
-}
-async function deleteParticipants(request: Request, env: Env, admin: Session, id?: string) {
-  const data = await body(request);
-  if (data.confirm !== 'delete') fail(400, '참가자 삭제를 확인해 주세요.');
-  const now = Date.now();
-  const rosterGuard = await sharedRosterGuard(env);
-  const removed = id
-    ? await env.DB.prepare(`DELETE FROM participants WHERE id=? AND ${rosterGuard} AND ${activeAdmin(env)}`).bind(id, admin.token_hash, now).run()
-    : await env.DB.prepare(`WITH selection AS MATERIALIZED (
-        SELECT participants.id FROM participants CROSS JOIN event WHERE event.id=1 AND roster_revision=? AND ${rosterGuard} AND ${activeAdmin(env)}
-      ) DELETE FROM participants WHERE id IN (SELECT id FROM selection)`)
-      .bind(revisionNumber(data.expectedRosterRevision), admin.token_hash, now).run();
-  if (!removed.meta.changes) {
-    await requireAdmin(request, env);
-    await requireExclusiveRoster(env, rosterGuard);
-    if (id) fail(404, '참가자가 없습니다.', 'participant_not_found');
-    fail(409, '참가자 명단이 바뀌었거나 비어 있습니다. 다시 확인해 주세요.', 'roster_changed');
-  }
-  return ok();
 }
 async function sharedRosterGuard(env: Env) {
   if (env.WORKSPACE?.namespace) return noOtherActivityData;
@@ -711,11 +672,12 @@ async function addCandidate(request: Request, env: Env, admin: Session) {
     } catch { return fail(400, '사진 요청을 확인해 주세요.'); }
     const formRevision = form.get('revision');
     if (formRevision !== null && (typeof formRevision !== 'string' || !/^\d+$/.test(formRevision))) fail(400, '회차 정보를 확인해 주세요.');
-    data = { name: form.get('name'), requestId: form.get('requestId'), revision: formRevision === null ? 0 : Number(formRevision) };
+    data = { name: form.get('name'), description: form.get('description') ?? '', requestId: form.get('requestId'), revision: formRevision === null ? 0 : Number(formRevision) };
   } else {
-    return fail(415, '와인 등록 요청의 형식을 확인해 주세요.');
+    return fail(415, '후보 등록 요청의 형식을 확인해 주세요.');
   }
-  const name = text(data.name, '와인명', 160), requestId = text(data.requestId, '요청 ID', 80);
+  const name = text(data.name, '후보 이름', 160), requestId = text(data.requestId, '요청 ID', 80);
+  const description = text(data.description ?? '', '후보 설명', 2000, false);
   if (!/^[A-Za-z0-9_-]{8,80}$/.test(requestId)) fail(400, '요청 ID를 확인해 주세요.');
   const revision = revisionNumber(data.revision);
   const a = await activity(env, 'byob');
@@ -738,10 +700,10 @@ async function addCandidate(request: Request, env: Env, admin: Session) {
     await env.PHOTOS.put(key, content, { httpMetadata: { contentType: photoType } });
   }
   try {
-    await env.DB.prepare(`INSERT INTO candidates(id,number,name,object_key,content_type,request_id)
-      SELECT ?,coalesce((SELECT max(number) FROM candidates),0)+1,?,?,?,?
+    await env.DB.prepare(`INSERT INTO candidates(id,number,name,description,object_key,content_type,request_id)
+      SELECT ?,coalesce((SELECT max(number) FROM candidates),0)+1,?,?,?,?,?
       WHERE EXISTS(SELECT 1 FROM activities WHERE id='byob' AND revision=? AND started_at IS NULL) AND ${activeAdmin(env)}
-      ON CONFLICT(request_id) DO NOTHING`).bind(id, name, key, photoType, requestId, revision, admin.token_hash, Date.now()).run();
+      ON CONFLICT(request_id) DO NOTHING`).bind(id, name, description, key, photoType, requestId, revision, admin.token_hash, Date.now()).run();
     const saved = await lookup().first<Candidate>();
     if (!saved) {
       await requireAdmin(request, env);
@@ -769,10 +731,13 @@ async function addCandidate(request: Request, env: Env, admin: Session) {
   }
 }
 async function changeCandidate(request: Request, env: Env, id: string, admin: Session) {
-  const data = await body(request), name = text(data.name, '와인명', 160), revision = requestRevision(data.revision);
-  const result = await env.DB.prepare(`UPDATE candidates SET name=? WHERE id=?
-    AND EXISTS(SELECT 1 FROM activities WHERE id='byob' AND revision=? AND started_at IS NULL) AND ${activeAdmin(env)}`)
-    .bind(name, id, revision, admin.token_hash, Date.now()).run();
+  const data = await body(request), revision = requestRevision(data.revision);
+  const original = await env.DB.prepare('SELECT name,description FROM candidates WHERE id=?').bind(id).first<Candidate>();
+  const name = original && data.name === original.name ? original.name : text(data.name, '후보 이름', 160);
+  const description = data.description === undefined ? null : original && data.description === original.description ? original.description! : text(data.description, '후보 설명', 2000, false);
+  const result = await env.DB.prepare(`UPDATE candidates SET name=?,description=coalesce(?,description) WHERE id=?
+    AND EXISTS(SELECT 1 FROM activities WHERE id='byob' AND revision=? AND (started_at IS NULL OR status='closed')) AND ${activeAdmin(env)}`)
+    .bind(name, description, id, revision, admin.token_hash, Date.now()).run();
   if (!result.meta.changes) {
     await requireAdmin(request, env);
     sameRevision(await activity(env, 'byob'), revision);
@@ -781,21 +746,24 @@ async function changeCandidate(request: Request, env: Env, id: string, admin: Se
   return ok();
 }
 async function renameCandidates(request: Request, env: Env, admin: Session) {
-  const data = await body(request);
+  const data = await body(request, 2 * 1024 * 1024);
   const revision = requestRevision(data.revision);
-  if (!Array.isArray(data.names) || !data.names.length) fail(400, '저장할 와인 이름을 확인해 주세요.');
+  if (!Array.isArray(data.names) || !data.names.length) fail(400, '저장할 후보 이름을 확인해 주세요.');
+  const originals = new Map((await candidates(env)).map(candidate => [candidate.id,candidate]));
   const names = data.names.map((value: unknown) => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) fail(400, '후보 정보를 확인해 주세요.');
     const edit = value as Record<string, unknown>;
     if (typeof edit.id !== 'string' || !edit.id.length || edit.id.length > 80 || edit.id.trim() !== edit.id) fail(400, '후보 ID를 확인해 주세요.');
-    return { id: edit.id, name: text(edit.name, '와인명', 160) };
+    const original = originals.get(edit.id);
+    return { id: edit.id, name: original && edit.name === original.name ? original.name : text(edit.name, '후보 이름', 160), ...(edit.description === undefined ? {} : {description:original && edit.description === original.description ? original.description : text(edit.description, '후보 설명', 2000, false)}) };
   });
   if (new Set(names.map(edit => edit.id)).size !== names.length) fail(400, '같은 후보가 두 번 포함되어 있습니다.');
   const updated = await env.DB.prepare(`WITH edits AS MATERIALIZED (
-      SELECT json_extract(value,'$.id') AS id,json_extract(value,'$.name') AS name FROM json_each(?)
-    ) UPDATE candidates SET name=(SELECT edits.name FROM edits WHERE edits.id=candidates.id)
+      SELECT json_extract(value,'$.id') AS id,json_extract(value,'$.name') AS name,json_extract(value,'$.description') AS description FROM json_each(?)
+    ) UPDATE candidates SET name=(SELECT edits.name FROM edits WHERE edits.id=candidates.id),
+      description=coalesce((SELECT edits.description FROM edits WHERE edits.id=candidates.id),description)
     WHERE id IN (SELECT id FROM edits)
-      AND EXISTS(SELECT 1 FROM activities WHERE id='byob' AND revision=? AND started_at IS NULL)
+      AND EXISTS(SELECT 1 FROM activities WHERE id='byob' AND revision=? AND (started_at IS NULL OR status='closed'))
       AND ${activeAdmin(env)}
       AND (SELECT count(*) FROM edits JOIN candidates c ON c.id=edits.id)=(SELECT count(*) FROM edits)
     RETURNING id`).bind(JSON.stringify(names), revision, admin.token_hash, Date.now()).all<{ id: string }>();
@@ -803,7 +771,7 @@ async function renameCandidates(request: Request, env: Env, admin: Session) {
     await requireAdmin(request, env);
     const current = await activity(env, 'byob');
     sameRevision(current, revision);
-    if (current.started_at) fail(409, '투표 시작 후 후보를 변경할 수 없습니다.', 'candidates_locked');
+    if (current.started_at && current.status !== 'closed') fail(409, '투표 마감 후 후보 정보를 수정해 주세요.', 'candidates_locked');
     fail(409, '후보 목록이 변경되었습니다. 화면을 새로 고쳐 주세요.', 'candidate_list_changed');
   }
   return ok();
@@ -865,7 +833,7 @@ async function retryCandidatePhotoCleanup(env: Env) {
 }
 async function resetCandidates(request: Request, env: Env, admin: Session) {
   const data = await body(request);
-  if (data.confirm !== 'reset-wines') fail(400, '와인 후보 초기화를 확인해 주세요.');
+  if (data.confirm !== 'reset-wines') fail(400, '후보 초기화를 확인해 주세요.');
   const revision = revisionNumber(data.revision);
   const guard = `${activeAdmin(env)}
     AND EXISTS(SELECT 1 FROM activities WHERE id='byob' AND revision=? AND started_at IS NULL AND status='waiting' AND published=0)
@@ -903,16 +871,15 @@ async function participantLogin(request: Request, env: Env) {
   const data = await body(request);
   const name = normalizeName(data.name);
   const key = nameKey(name);
-  const lookup = env.DB.prepare('SELECT id,name FROM participants WHERE name_key=?').bind(key);
-  let participant = await lookup.first<Participant>();
-  if (!participant) {
-    const created = await env.DB.prepare(`INSERT INTO participants(id,name,name_key) SELECT ?,?,?
-      WHERE EXISTS(SELECT 1 FROM event WHERE id=1 AND participation_mode='open')
-      ON CONFLICT(name_key) DO NOTHING RETURNING id,name`).bind(crypto.randomUUID(), name, key).first<Participant>();
-    participant = created ?? await lookup.first<Participant>();
-  }
-  if (!participant) fail(404, '등록된 이름을 확인해 주세요.', 'participant_not_found');
-  return json({ participant }, 200, { 'Set-Cookie': await createSession(request, env, 'participant', participant.id) });
+  const token = randomToken(), hash = await digest(token), seconds = 30 * 24 * 3600, now = Date.now();
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM sessions WHERE token_hash=? OR expires_at<=?').bind(await digest(readCookie(request, cookieName(env, 'participant'))), now),
+    env.DB.prepare('INSERT INTO participants(id,name,name_key) VALUES(?,?,?) ON CONFLICT(name_key) DO NOTHING').bind(crypto.randomUUID(), name, key),
+    env.DB.prepare("INSERT INTO sessions(token_hash,role,participant_id,expires_at,credential_version) SELECT ?,'participant',id,?,NULL FROM participants WHERE name_key=?").bind(hash, now + seconds * 1000, key)
+  ]);
+  const participant = await env.DB.prepare('SELECT p.id,p.name FROM participants p JOIN sessions s ON s.participant_id=p.id WHERE s.token_hash=?').bind(hash).first<Participant>();
+  if (!participant) fail(409, '참여 상태가 바뀌었습니다. 이름을 다시 입력해 주세요.', 'participant_changed');
+  return json({ participant }, 200, { 'Set-Cookie': sessionCookie(env, 'participant', token, seconds) });
 }
 
 async function assetResponse(request: Request, env: Env, path: string) {
@@ -945,7 +912,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (method === 'POST') return participantLogin(request, env);
     if (method === 'DELETE') return revoke(request, env, 'participant');
   }
-  if (path === '/api/admin/login' && method === 'POST') { await rateLimit(request, env, 'admin', 8); const data = await body(request); const password = typeof data.password === 'string' && data.password.length <= 1024 ? data.password : fail(400, '비밀번호를 확인해 주세요.'); const verified=await verifyPassword(password, env);if (!verified.valid) fail(401, '비밀번호가 일치하지 않습니다.', 'invalid_password'); return json({ ok: true }, 200, { 'Set-Cookie': await createSession(request, env, 'admin', null,verified.version) }); }
+  if (path === '/api/admin/login' && method === 'POST') { await rateLimit(request, env, 'admin', 8); const data = await body(request); const password = typeof data.password === 'string' && data.password.length > 0 ? data.password : fail(400, '비밀번호를 확인해 주세요.'); const verified=await verifyPassword(password, env);if (!verified.valid) fail(401, '비밀번호가 일치하지 않습니다.', 'invalid_password'); return json({ ok: true }, 200, { 'Set-Cookie': await createSession(request, env, 'admin', null,verified.version) }); }
   if (path === '/api/admin/session' && method === 'DELETE') { await requireAdmin(request, env); return revoke(request, env, 'admin'); }
   if (path === '/api/bootstrap' && method === 'GET') return bootstrap(request, env);
   const match = /^\/api\/(activities|results)\/([^/]+)(\/answer)?$/.exec(path);
@@ -965,15 +932,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (path === '/api/admin/event' && method === 'PATCH') return updateEvent(request, env, admin);
     if (path === '/api/admin/settings' && method === 'PATCH') return updateSettings(request, env, admin);
     if (path === '/api/admin/reset' && method === 'POST') return resetActivities(request, env, admin);
-    if (path === '/api/admin/participants') {
-      if (method === 'POST') return addParticipants(request, env, admin);
-      if (method === 'DELETE') return deleteParticipants(request, env, admin);
-    }
-    const participantMatch = /^\/api\/admin\/participants\/([^/]+)$/.exec(path);
-    if (participantMatch) {
-      if (method === 'PATCH') return renameParticipant(request, env, participantMatch[1], admin);
-      if (method === 'DELETE') return deleteParticipants(request, env, admin, participantMatch[1]);
-    }
+    if (path === '/api/admin/participants' || path.startsWith('/api/admin/participants/')) fail(410, '참가자는 이름을 직접 입력하며, 관리자는 제출 여부만 확인할 수 있습니다.', 'roster_read_only');
     const activityMatch = /^\/api\/admin\/activities\/([^/]+)(\/state|\/reset)?$/.exec(path);
     if (activityMatch) {
       const id = activityId(activityMatch[1]);
@@ -1018,9 +977,9 @@ async function memberRoute(request: Request, env: Env, ctx?: ExecutionContext): 
     if (api === '/api/admin/login') fail(401, '회원 로그인이 필요합니다.', 'member_login_required');
     member = await getMemberSession(request, env);
     if (member?.status !== 'approved') fail(401, '승인된 회원 로그인이 필요합니다.', 'unauthorized');
-    if (workspace && (member.namespace !== workspace.namespace || member.workspaceSlug !== workspace.slug)) fail(403, '다른 회원의 투표를 관리할 수 없습니다.', 'workspace_forbidden');
+    if (workspace && (workspace.memberId ? member.id !== workspace.memberId : member.namespace !== workspace.namespace || member.workspaceSlug !== workspace.slug)) fail(403, '다른 회원의 투표를 관리할 수 없습니다.', 'workspace_forbidden');
     if (!['GET', 'HEAD'].includes(request.method) && request.headers.get('x-member-csrf') !== member.csrfToken) fail(403, '회원 계정이 변경되었습니다. 화면을 새로 고쳐 주세요.', 'csrf');
-    workspace ??= { slug: member.workspaceSlug, namespace: member.namespace };
+    workspace ??= { slug: member.workspaceSlug, namespace: member.namespace, memberId: member.id };
     if (api === '/api/admin/password' || api === '/api/admin/session') {
       return await handleMemberRequest(withPath(request, api.replace('/api/admin/', '/api/members/')), env, ctx)
         ?? fail(404, '요청한 경로가 없습니다.', 'not_found');
@@ -1028,7 +987,7 @@ async function memberRoute(request: Request, env: Env, ctx?: ExecutionContext): 
   }
   if (workspace) {
     await ensureWorkspace(env, workspace);
-    return route(apiRequest, { ...workspaceEnv(env, workspace), ...(member ? { MEMBER_SESSION: member } : {}) });
+    return route(apiRequest, { ...workspaceEnv(env, workspace), MEMBER_DB: env.DB, ...(member ? { MEMBER_SESSION: member } : {}) });
   }
   return route(request, env);
 }

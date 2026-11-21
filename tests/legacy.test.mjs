@@ -25,7 +25,7 @@ test('existing schema and configured cookies retain credentials, participants, b
       local.db.prepare("INSERT INTO participants VALUES('existing-person','Existing person','existing person')"),
       local.db.prepare("INSERT INTO sessions VALUES(?,'admin',NULL,?,?)").bind(digest(adminToken), now + 3600000, version),
       local.db.prepare("INSERT INTO sessions VALUES(?,'participant','existing-person',?,NULL)").bind(digest(participantToken), now + 3600000),
-      local.db.prepare("INSERT INTO candidates VALUES('existing-wine',1,'Existing wine','','','existing-upload')"),
+      local.db.prepare("INSERT INTO candidates(id,number,name,object_key,content_type,request_id) VALUES('existing-wine',1,'Existing wine','','','existing-upload')"),
       local.db.prepare("UPDATE activities SET voting_method='full',status='open',started_at='2026-01-01T12:00:00Z' WHERE id='byob'"),
       local.db.prepare("INSERT INTO answers VALUES('byob','existing-person',?,?)").bind(JSON.stringify({ ranking: ['existing-wine'] }), '2026-01-01T12:01:00Z'),
       local.db.prepare("UPDATE activities SET status='closed' WHERE id='byob'"),
@@ -85,11 +85,12 @@ test('legacy dormant activities permit full reset while active other activity da
     await local.db.prepare("INSERT INTO answers VALUES('price',?,?,?)").bind(id, '{"price":100}', '2026-01-01T00:00:00Z').run();
     const before = await dump(local.db);
     const current = await state();
+    const blockedReset = await reset(current);
+    assert.equal(blockedReset.status,409);assert.equal(blockedReset.body.code,'shared_activity_data');
     for (const response of [
-      await reset(current),
       await admin(`/api/admin/participants/${id}`, 'DELETE', { confirm: 'delete' }),
       await admin('/api/admin/participants', 'DELETE', { confirm: 'delete', expectedRosterRevision: current.rosterRevision })
-    ]) { assert.equal(response.status, 409); assert.equal(response.body.code, 'shared_activity_data'); }
+    ]) { assert.equal(response.status, 410); assert.equal(response.body.code, 'roster_read_only'); }
     assert.deepEqual(await dump(local.db), before);
     assert.equal((await admin('/api/admin/reset', 'POST', { confirm: 'reset', expectedRevisions: { byob: 0 } })).status, 200);
     assert.deepEqual((await local.db.prepare("SELECT * FROM answers WHERE activity_id='price'").all()).results, before.answers);
@@ -104,11 +105,9 @@ test('legacy dormant activities permit full reset while active other activity da
     assert.deepEqual((await state()).participants, []);
     assert.deepEqual((await state()).candidates, []);
     assert.deepEqual((await local.db.prepare("SELECT * FROM activities WHERE id<>'byob' ORDER BY id").all()).results, dormant);
-    const created = await admin('/api/admin/participants', 'POST', { names: ['Dormant individual'] });
-    assert.equal((await admin(`/api/admin/participants/${created.body.created[0].id}`, 'DELETE', { confirm: 'delete' })).status, 200);
-    await admin('/api/admin/participants', 'POST', { names: ['Dormant first', 'Dormant second'] });
-    const roster = await state();
-    assert.equal((await admin('/api/admin/participants', 'DELETE', { confirm: 'delete', expectedRosterRevision: roster.rosterRevision })).status, 200);
+    assert.equal((await person('/api/session', 'POST', {name:'Dormant individual'})).status,200);
+    assert.equal((await admin('/api/admin/participants', 'POST', { names: ['Blocked roster'] })).status,410);
+    assert.equal((await reset(await state())).status,200);
     assert.deepEqual((await state()).participants, []);
   } finally { await local.mf.dispose(); }
 });

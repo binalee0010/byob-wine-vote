@@ -70,6 +70,19 @@ test('history save and delete immediately update the loaded list without another
   }finally{app.close();restore()}
 });
 
+test('archived description edits preserve the name, photo and saved result fields',async()=>{
+  const restore=environment();let record=savedRecord();record.rows[0].description='기존 설명';let submitted;
+  globalThis.fetch=async(path,init)=>{submitted=JSON.parse(init.body);return Response.json({record:{...record,version:'description-version',rows:record.rows.map(row=>({...row,description:submitted.names.find(change=>change.id===row.id)?.description??row.description}))}})};
+  const original={...record.rows[0]};const app=mount(()=>VoteHistoryDetail({record,onBack(){},onSaved:next=>{record=next},onDeleted(){}}));
+  try{
+    let tree=app.render();button(tree,'기록 수정').props.onClick();tree=app.render();
+    const description=byType(tree,'textarea');assert.equal(description.props.value,'기존 설명');description.props.onChange({target:{value:'상품, 음식과 여행지 설명'}});
+    tree=app.render();byType(tree,'form').props.onSubmit({preventDefault});await settle();
+    assert.deepEqual(submitted.names,[{id:'a',name:original.name,description:'상품, 음식과 여행지 설명'}]);
+    assert.deepEqual(record.rows[0],{...original,description:'상품, 음식과 여행지 설명'});
+  }finally{app.close();restore()}
+});
+
 for (const change of ['title-only', 'one-name', 'all-names']) test(`101-wine history sends only changed names (${change})`,async()=>{
   const restore=environment();let record=savedRecord();
   record.rows=Array.from({length:101},(_,index)=>({...record.rows[0],id:`wine-${index}`,candidateId:`wine-${index}`,number:index+1,name:`기존 와인 ${index+1}`}));

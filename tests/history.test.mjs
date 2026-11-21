@@ -56,7 +56,7 @@ test('manual history freezes private results and survives full reset, session re
     assert.equal((await participant(historyPath, 'POST', expected(initial))).status, 401);
     assert.equal((await admin(historyPath, 'POST', expected(initial), { headers: { Origin: 'https://other.test' } })).status, 403);
     assert.equal((await admin(historyPath, 'POST', expected(initial))).body.code, 'history_not_closed');
-    assert.equal((await admin('/api/admin/settings', 'PATCH', { event: { title: '기록할 행사', participationMode: 'restricted' },
+    assert.equal((await admin('/api/admin/settings', 'PATCH', { event: { title: '기록할 행사' },
       activities: [{ id: 'byob', title: '기록할 투표', revision: 0, votingMethod: 'custom', rankPoints: [7, 2], resultVisibility: 'public' }]
     })).status, 200);
     const photographed = await addPhoto(admin, '기록 사진');

@@ -3,16 +3,20 @@ import Admin, { PasswordChange } from './Admin';
 import { api, ApiError, setMemberCsrfToken, setMemberWorkspaceSlug, type Member, type MemberSession } from './api';
 import { siteTitle } from './branding';
 import { Notice, SiteHeader } from './SiteChrome';
+import MemberPolls from './MemberPolls';
 
 type JoinRequest = { id: string; email: string; status: Member['status']; createdAt: string; reviewedAt: string | null };
 
 export default function MemberPortal({ onStandalone }: { onStandalone?: () => void } = {}) {
   const approvalsIntent = new URLSearchParams(location.search).get('settings') === 'approvals';
   const adminUrl = approvalsIntent ? '/admin?settings=approvals' : '/admin';
+  const pollSlug = location.pathname.match(/^\/admin\/p\/([a-z0-9-]+)\/?$/)?.[1] ?? null;
+  const loginTarget = pollSlug ? '/admin/p/' + pollSlug + (approvalsIntent ? '?settings=approvals' : '') : adminUrl;
   const [session, setSession] = useState<MemberSession>({ authenticated: false, csrfToken: null, member: null });
   const [signup, setSignup] = useState(false);
   const [resetToken, setResetToken] = useState(() => new URLSearchParams(location.hash.slice(1)).get('reset') ?? new URLSearchParams(location.search).get('reset'));
   const [resetting, setResetting] = useState(resetToken !== null);
+  const [entering, setEntering] = useState(location.pathname.startsWith('/admin') && !resetting);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
@@ -31,12 +35,13 @@ export default function MemberPortal({ onStandalone }: { onStandalone?: () => vo
   }, [resetToken]);
   const applySession = useCallback((next: MemberSession) => {
     if (next.authenticated && next.member?.status === 'approved') {
-      if (location.pathname !== '/admin') { location.replace(adminUrl); return; }
-      if (next.member.workspaceSlug) setMemberWorkspaceSlug(next.member.workspaceSlug);
+      if (location.pathname !== '/admin' && !pollSlug) { setEntering(true); location.replace(adminUrl); return; }
+      if (pollSlug) setMemberWorkspaceSlug(pollSlug);
     }
+    setEntering(false);
     setMemberCsrfToken(next.csrfToken);
     setSession(next);
-  }, [adminUrl]);
+  }, [adminUrl, pollSlug]);
   const refreshSession = useCallback(async () => {
     const current = ++sessionEpoch.current;
     const next = await api<MemberSession>('/members/session');
@@ -56,7 +61,7 @@ export default function MemberPortal({ onStandalone }: { onStandalone?: () => vo
           if (!stopped && current === sessionEpoch.current && mode.mode === 'ranked-byob' && mode.membership !== true) { onStandalone(); return; }
         } catch { /* Keep the login screen when the installation mode cannot be confirmed. */ }
       }
-      if (!stopped && current === sessionEpoch.current) setError((e as Error).message);
+      if (!stopped && current === sessionEpoch.current) { setEntering(false); setError((e as Error).message); }
     });
     return () => { stopped = true; };
   }, [applySession, onStandalone, resetting]);
@@ -79,10 +84,10 @@ export default function MemberPortal({ onStandalone }: { onStandalone?: () => vo
     submitting.current = true; setBusy(true); setError(''); setMessage('');
     try {
       const next = await api<MemberSession>('/members/' + (signup ? 'signup' : 'login'), 'POST', { email, password });
-      if (next.authenticated && next.member?.status === 'approved') { setPassword(''); location.replace(adminUrl); }
+      if (next.authenticated && next.member?.status === 'approved') { setEntering(true); setPassword(''); location.replace(loginTarget); return; }
       else { applySession(next); setPassword(''); }
-    } catch (e) { setError((e as Error).message); }
-    finally { submitting.current = false; setBusy(false); }
+    } catch (e) { setEntering(false); setError((e as Error).message); }
+    submitting.current = false; setBusy(false);
   }
   async function logout() {
     if (submitting.current) return;
@@ -99,17 +104,18 @@ export default function MemberPortal({ onStandalone }: { onStandalone?: () => vo
   }
   const member = session?.authenticated ? session.member : null;
   if (!resetting && member?.status === 'approved') return <>
-    <Admin member={member} onSettings={() => { setError(''); setSettings(true); }} onSessionEnded={sessionEnded}/>
+    {pollSlug ? <Admin member={member} pollSlug={pollSlug} onSettings={() => { setError(''); setSettings(true); }} onSessionEnded={sessionEnded}/>
+      : <MemberPolls onSettings={() => { setError(''); setSettings(true); }} onSessionEnded={sessionEnded}/>}
     {settings && <MemberSettings member={member} busy={busy} error={error} onClose={() => { setSettings(false); setError(''); }} onLogout={logout} onChangePassword={changePassword} onSessionEnded={sessionEnded}/>}
   </>;
   return <div className="participant-shell ballot-shell member-shell"><SiteHeader title={siteTitle}/><main>
     <Notice error>{error}</Notice><Notice>{message}</Notice>
-    {resetting ? <PasswordReset key={resetToken ?? 'request'} token={resetToken} onBack={() => { setResetting(false); setResetToken(null); setSignup(false); }} onRequestAgain={() => setResetToken(null)} onComplete={() => { setResetting(false); setResetToken(null); setSignup(false); setPassword(''); setMessage('비밀번호를 변경했습니다. 새 비밀번호로 로그인해 주세요.'); }}/>
+    {entering ? <p className="loading" role="status">로그인을 확인하고 있어요…</p>
+      : resetting ? <PasswordReset key={resetToken ?? 'request'} token={resetToken} onBack={() => { setResetting(false); setResetToken(null); setSignup(false); }} onRequestAgain={() => setResetToken(null)} onComplete={() => { setResetting(false); setResetToken(null); setSignup(false); setPassword(''); setMessage('비밀번호를 변경했습니다. 새 비밀번호로 로그인해 주세요.'); }}/>
       : member ? <section className="panel member-status"><h2>{member.status === 'pending' ? '가입 승인 대기 중' : '가입 신청이 승인되지 않았습니다'}</h2><p className="member-email">{member.email}</p><p className="muted">{member.status === 'pending' ? '관리자가 가입을 승인하면 내 투표를 만들고 관리할 수 있습니다.' : '가입 신청에 관해 관리자에게 문의해 주세요.'}</p><div className="row"><button type="button" disabled={busy} onClick={() => { setError(''); void refreshSession().catch(e => setError((e as Error).message)); }}>승인 상태 확인</button><button type="button" disabled={busy} onClick={() => { void logout().catch(() => {}); }}>로그아웃</button></div></section>
       : <section className="panel member-login"><h2>{signup ? '가입 신청' : '로그인'}</h2><form onSubmit={authenticate}><fieldset disabled={busy}>
         <label>이메일<input type="email" name="email" autoFocus autoComplete="username" maxLength={254} required value={email} onChange={e => setEmail(e.target.value)}/></label>
-        <label>비밀번호<input type="password" name="password" autoComplete={signup ? 'new-password' : 'current-password'} minLength={signup ? 10 : undefined} maxLength={1024} required value={password} onChange={e => setPassword(e.target.value)}/></label>
-        {signup && <small>비밀번호 10자 이상</small>}
+        <label>비밀번호<input type="password" name="password" autoComplete={signup ? 'new-password' : 'current-password'} required value={password} onChange={e => setPassword(e.target.value)}/></label>
         <button className="primary" disabled={busy || !email.trim() || !password}>{busy ? '확인 중…' : signup ? '가입 신청' : '로그인'}</button>
       </fieldset></form><div className="member-login-links"><button type="button" className="text-button" disabled={busy} onClick={() => { setSignup(!signup); setPassword(''); setError(''); setMessage(''); }}>{signup ? '로그인으로 돌아가기' : '가입 신청'}</button><button type="button" className="text-button" disabled={busy} onClick={() => { setResetting(true); setPassword(''); setError(''); setMessage(''); }}>비밀번호 재설정</button></div></section>}
   </main></div>;
@@ -141,9 +147,9 @@ export function PasswordReset({ token, onBack, onRequestAgain, onComplete }: { t
     {invalid ? <div ref={result} tabIndex={-1} className="member-reset-result"><Notice error>재설정 링크가 만료되었거나 이미 사용되었습니다. 새 메일을 요청해 주세요.</Notice><button type="button" className="primary" onClick={onRequestAgain}>새 재설정 메일 받기</button></div>
       : sent ? <div ref={result} tabIndex={-1} className="member-reset-result"><Notice>가입한 이메일이면 재설정 링크를 보냈습니다. 메일이 오지 않으면 다시 요청해 주세요.</Notice><button type="button" onClick={() => setSent(false)}>다시 요청</button></div>
       : <form onSubmit={submit}><fieldset disabled={busy}>
-        {token !== null ? <><label>새 비밀번호<input type="password" name="newPassword" autoFocus autoComplete="new-password" minLength={10} maxLength={1024} required value={password} onChange={e => setPassword(e.target.value)}/></label><small>비밀번호 10자 이상</small></>
+        {token !== null ? <label>새 비밀번호<input type="password" name="newPassword" autoFocus autoComplete="new-password" required value={password} onChange={e => setPassword(e.target.value)}/></label>
           : <label>이메일<input type="email" name="email" autoFocus autoComplete="username" maxLength={254} required value={email} onChange={e => setEmail(e.target.value)}/></label>}
-        <button type="submit" className="primary" disabled={busy || (token !== null ? password.length < 10 : !email.trim())}>{busy ? '처리 중…' : token !== null ? '비밀번호 변경' : '재설정 메일 보내기'}</button>
+        <button type="submit" className="primary" disabled={busy || (token !== null ? !password : !email.trim())}>{busy ? '처리 중…' : token !== null ? '비밀번호 변경' : '재설정 메일 보내기'}</button>
       </fieldset></form>}
     <button type="button" className="text-button" disabled={busy} onClick={onBack}>로그인으로 돌아가기</button>
   </section>;

@@ -59,7 +59,7 @@ test('workspace provisioning preserves owner schema and rows, namespaces all con
     assert.equal(sqlite.prepare(`SELECT roster_revision FROM ${prefix}event`).get().roster_revision, 1);
     assert.equal(sqlite.prepare('SELECT roster_revision FROM event').get().roster_revision, 1);
     await assert.rejects(scoped.prepare("INSERT INTO sessions VALUES('bad','admin',NULL,9999999999999,'stale')").run(), /credential_changed/);
-    await scoped.prepare("INSERT INTO candidates VALUES('wine',1,'Wine','','','upload-one')").run();
+    await scoped.prepare("INSERT INTO candidates(id,number,name,object_key,content_type,request_id) VALUES('wine',1,'Wine','','','upload-one')").run();
     await scoped.prepare("UPDATE activities SET status='open',started_at='2026-01-01' WHERE id='byob'").run();
     await assert.rejects(scoped.prepare("DELETE FROM candidates WHERE id='wine'").run(), /candidates_locked/);
     await scoped.prepare("INSERT INTO answers VALUES('byob','person','{\"ranking\":[\"wine\"]}','today')").run();

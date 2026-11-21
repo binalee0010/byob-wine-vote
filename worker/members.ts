@@ -3,6 +3,7 @@ import { legacyAdminCredential, memberAdminSession, revokeWorkspaceAdmin, revoke
 import { ensureWorkspace, type Workspace } from './workspaces';
 import { retryPendingNotices } from './signup-mail';
 import { confirmPasswordReset, PasswordResetError, requestPasswordReset } from './password-reset';
+import { memberPolls } from './polls';
 
 type MemberRow = { id:string; email:string; role:'owner'|'member'; status:'pending'|'approved'|'rejected'; workspace_slug:string; namespace:string|null; password_hash:string|null; credential_version:string|null; created_at:number; reviewed_at:number|null };
 export type MemberSession = { id:string; email:string; role:MemberRow['role']; status:MemberRow['status']; workspaceSlug:string; namespace:string|null; csrfToken:string; tokenHash:string; credentialVersion:string };
@@ -24,8 +25,8 @@ function ownerEmail(env:Env) {
   if(!env.SUPERADMIN_EMAIL)fail(503,'관리자 이메일 설정을 확인해 주세요.','members_unconfigured');
   try{return email(env.SUPERADMIN_EMAIL);}catch{return fail(503,'관리자 이메일 설정을 확인해 주세요.','members_unconfigured');}
 }
-function password(value:unknown,newPassword=false) {
-  if(typeof value!=='string' || value.length<(newPassword?10:1) || value.length>1024)fail(400,newPassword?'10~1024자의 비밀번호를 입력해 주세요.':'비밀번호를 확인해 주세요.');
+function password(value:unknown) {
+  if(typeof value!=='string' || !value.length)fail(400,'비밀번호를 입력해 주세요.');
   return value;
 }
 function sameOrigin(request:Request) {
@@ -57,12 +58,15 @@ function state(member:MemberSession|null) {return {authenticated:!!member,csrfTo
 
 export async function getWorkspaceBySlug(env:Env,slug:string):Promise<Workspace|null> {
   if(slug!=='owner' && !/^[a-f0-9]{32}$/.test(slug))return null;
-  if(slug==='owner'){ownerEmail(env);return {slug:'owner',namespace:null};}
-  const row=await env.DB.prepare("SELECT workspace_slug,namespace,email,role FROM members WHERE workspace_slug=? AND status='approved'").bind(slug).first<{workspace_slug:string;namespace:string|null;email:string;role:string}>();
+  const poll=await env.DB.prepare("SELECT p.namespace,m.id,m.email,m.role FROM member_polls p JOIN members m ON m.id=p.member_id WHERE p.slug=? AND m.status='approved'").bind(slug).first<{namespace:string|null;id:string;email:string;role:string}>();
+  if(poll)return poll.role==='owner' && poll.email!==ownerEmail(env)?null:{slug,namespace:poll.namespace,memberId:poll.id};
+  if(slug==='owner'){ownerEmail(env);return {slug:'owner',namespace:null,memberId:'owner'};}
+  const row=await env.DB.prepare("SELECT id,workspace_slug,namespace,email,role FROM members WHERE workspace_slug=? AND status='approved'").bind(slug).first<{id:string;workspace_slug:string;namespace:string|null;email:string;role:string}>();
   if(!row || (row.role==='owner' && row.email!==ownerEmail(env)))return null;
-  return {slug:row.workspace_slug,namespace:row.namespace};
+  return {slug:row.workspace_slug,namespace:row.namespace,memberId:row.id};
 }
 export async function getMemberSession(request:Request,env:Env):Promise<MemberSession|null> {
+  if(env.MEMBER_DB)env={...env,DB:env.MEMBER_DB,WORKSPACE:undefined};
   const value=cookie(request);if(!/^[a-f0-9]{64}$/.test(value))return null;
   const configuredOwner=ownerEmail(env),tokenHash=await digest(value);
   const row=await env.DB.prepare('SELECT m.*,s.csrf_token,s.credential_version AS session_version FROM member_sessions s JOIN members m ON m.id=s.member_id WHERE s.token_hash=? AND s.expires_at>?').bind(tokenHash,Date.now()).first<MemberRow & {csrf_token:string;session_version:string}>();
@@ -91,7 +95,7 @@ function sessionJson(member:MemberSession|null,status=200,headers?:HeadersInit) 
 }
 async function signup(request:Request,env:Env,ctx?:ExecutionContext) {
   const adminEmail=ownerEmail(env);await rateLimit(request,env,'signup-ip',8);
-  const data=await body(request),address=email(data.email),secret=password(data.password,true);
+  const data=await body(request),address=email(data.email),secret=password(data.password);
   await rateLimit(request,env,'signup-email',5,address);
   if(address===adminEmail)fail(403,'관리자 이메일은 기존 관리자 비밀번호로 로그인해 주세요.','owner_signup_forbidden');
   const id=crypto.randomUUID().replaceAll('-',''),{hash}=await passwordOperation<{hash:string}>(env,'/hash',{password:secret}),version=crypto.randomUUID(),now=Date.now();
@@ -126,7 +130,7 @@ async function login(request:Request,env:Env) {
 }
 async function changePassword(request:Request,env:Env,member:MemberSession) {
   await rateLimit(request,env,'password-ip',8);await rateLimit(request,env,'password-account',8,member.id);
-  const data=await body(request),current=password(data.currentPassword),next=password(data.newPassword,true);
+  const data=await body(request),current=password(data.currentPassword),next=password(data.newPassword);
   if(member.role==='owner') {
     const stub=env.PASSWORD_VERIFIER.get(env.PASSWORD_VERIFIER.idFromName('admin-password'));
     const response=await stub.fetch('https://password.internal/member-change',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({currentPassword:current,newPassword:next,sessionHash:member.tokenHash})});
@@ -168,7 +172,7 @@ export async function handleMemberRequest(request:Request,env:Env,ctx?:Execution
     }
     if(path==='/api/members/password-reset/confirm' && method==='POST') {
       ownerEmail(env);await rateLimit(request,env,'reset-confirm-ip',12);
-      const data=await body(request),next=password(data.newPassword,true);
+      const data=await body(request),next=password(data.newPassword);
       const target=await confirmPasswordReset(env,data.token,next);
       await revokeWorkspaceAdmins(env,{slug:target.workspaceSlug,namespace:target.namespace});
       return json({ok:true});
@@ -180,6 +184,7 @@ export async function handleMemberRequest(request:Request,env:Env,ctx?:Execution
     }
     const member=await requireSession(request,env);
     if(method!=='GET')requireCsrf(request,member);
+    if(path==='/api/members/polls')return await memberPolls(request,env,member,()=>body(request));
     if(path==='/api/members/session' && method==='DELETE') {
       await env.DB.prepare('DELETE FROM member_sessions WHERE token_hash=?').bind(member.tokenHash).run();
       const headers=new Headers({'Set-Cookie':sessionCookie('',0)});headers.append('Set-Cookie',await revokeWorkspaceAdmin(request,env,workspace(member)));

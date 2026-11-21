@@ -40,9 +40,9 @@ async function sendNotice(env: MailEnv, notice: Notice) {
   const { origin, smtp } = mailConfiguration(env), mailer = transport(smtp);
   try {
     const result = await mailer.sendMail({
-      from: smtp.from, to: recipient, subject: 'BYOB 회원 가입 승인 요청',
+      from: smtp.from, to: recipient, subject: '모두의 투표 회원 가입 승인 요청',
       messageId: `<byob-signup-${notice.member_id}@${origin.hostname}>`,
-      text: `${notice.email} 님이 BYOB 회원 가입을 신청했습니다.\n\n아래 링크로 로그인한 뒤 가입 승인 메뉴에서 신청을 확인해 주세요.\n${new URL('/admin?settings=approvals', origin).href}`
+      text: `${notice.email} 님이 모두의 투표 회원 가입을 신청했습니다.\n\n아래 링크로 로그인한 뒤 가입 승인 메뉴에서 신청을 확인해 주세요.\n${new URL('/admin?settings=approvals', origin).href}`
     });
     if (result.accepted.length !== 1 || result.rejected.length) throw new Error('Mail was not accepted');
   } finally { mailer.close(); }
@@ -52,7 +52,7 @@ export async function sendPasswordReset(env: MailEnv, notice: { email: string; t
   const { origin, smtp } = mailConfiguration(env), mailer = transport(smtp);
   try {
     const result = await mailer.sendMail({
-      from: smtp.from, to: notice.email, subject: 'BYOB 비밀번호 재설정',
+      from: smtp.from, to: notice.email, subject: '모두의 투표 비밀번호 재설정',
       text: `아래 링크에서 새 비밀번호를 설정해 주세요. 이 링크는 30분 동안 한 번만 사용할 수 있습니다.\n${new URL('/#reset=' + notice.token, origin).href}\n\n요청하지 않았다면 이 메일을 무시해 주세요.`
     });
     if (result.accepted.length !== 1 || result.rejected.length) throw new Error('Mail was not accepted');
