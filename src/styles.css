@@ -128,3 +128,5 @@ body{padding-left:env(safe-area-inset-left,0px);padding-right:env(safe-area-inse
 .site-title-link:hover{text-decoration:underline}
 .admin-site-title{display:flex;flex-wrap:wrap;align-items:baseline;gap:5px 12px;color:var(--wine);font-size:22px;font-weight:700;line-height:1.4;letter-spacing:-.4px;text-decoration:none}
 .admin-site-title span{font-size:13px;color:var(--muted);letter-spacing:0}
+
+.history-actions{margin:20px 0}.history-edit-form{padding:20px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);margin:20px 0}.history-conflict{margin:14px 0}.history-conflict button{margin-top:8px}.vote-history>h2{overflow-wrap:anywhere}

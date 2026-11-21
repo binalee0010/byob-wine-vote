@@ -14,7 +14,9 @@
     "db:local": "wrangler d1 migrations apply DB --local",
     "password:hash": "node scripts/password-hash.mjs",
     "deploy:check": "npm run build && wrangler deploy --dry-run",
-    "deploy": "npm run build && wrangler deploy"
+    "deploy": "npm run build && wrangler deploy",
+    "deploy:existing": "npm run build && node scripts/deploy-existing.mjs",
+    "deploy:existing:check": "npm run build && node scripts/deploy-existing.mjs --dry-run"
   },
   "dependencies": {
     "react": "19.2.9",

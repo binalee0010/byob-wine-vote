@@ -1,0 +1,1 @@
+Compatibility fixture: the original sequence of 12 SQL migrations (through publish-on-close). Only the initial event display title is replaced with a synthetic label. These files are test inputs, never deployment migrations. They preserve the old event NOT NULL columns, dormant additional activities, triggers, sessions, credential bootstrap history and archived snapshot schema.

@@ -89,7 +89,8 @@ test('manual history freezes private results and survives full reset, session re
     const { record } = detail.body;
     const { rows, ...summary } = record;
     assert.deepEqual((await admin(historyPath)).body.records, [summary]);
-    assert.deepEqual({ ...summary, startedAt: null, savedAt: null }, { id, title: '기록할 행사', activityTitle: '기록할 투표',
+    assert.match(summary.version, /^[a-f0-9]{64}$/);
+    assert.deepEqual({ ...summary, startedAt: null, savedAt: null }, { id, version: summary.version, title: '기록할 행사', activityTitle: '기록할 투표',
       startedAt: null, savedAt: null, votingMethod: 'custom', rankPoints: [7, 2], ballotCount: 1 });
     assert(Number.isFinite(Date.parse(record.startedAt)));
     assert(Number.isFinite(Date.parse(record.savedAt)));

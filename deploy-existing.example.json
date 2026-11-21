@@ -1,0 +1,11 @@
+{
+  "workerName": "your-existing-worker",
+  "accountId": "REPLACE_WITH_EXISTING_ACCOUNT_ID",
+  "databaseName": "your-existing-database",
+  "databaseId": "REPLACE_WITH_EXISTING_DATABASE_ID",
+  "bucketName": "your-existing-photo-bucket",
+  "publicOrigin": "https://vote.example.com",
+  "routes": ["vote.example.com", "legacy-vote.example.com"],
+  "adminSessionCookie": "__Host-your_previous_admin_cookie",
+  "participantSessionCookie": "__Host-your_previous_participant_cookie"
+}

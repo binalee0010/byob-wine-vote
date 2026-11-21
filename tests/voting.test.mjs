@@ -67,7 +67,7 @@ test('winner and top-two voting validate ballots, share the correct totals, and 
   try {
     const admin = client(local.mf), anon = client(local.mf);
     assert.equal((await admin('/api/admin/login', 'POST', { password: TEST_PASSWORD })).status, 200);
-    assert.equal((await getAdmin(admin)).participantUrl, canonical);
+    assert.equal((await getAdmin(admin)).participantUrl, canonical + '/');
     assert.equal((await anon('/api/bootstrap')).body.activities[0].votingMethod, 'full');
     assert.equal((await anon(config, 'PATCH', { votingMethod: 'winner', revision: 0 })).status, 401);
     assert.equal((await admin(config, 'PATCH', { votingMethod: 'winner', revision: 0 }, { headers: { Origin: 'https://evil.test' } })).status, 403);

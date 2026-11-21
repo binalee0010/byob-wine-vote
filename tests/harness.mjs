@@ -1,14 +1,14 @@
 import { build } from 'esbuild';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { fileURLToPath } from 'node:url';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import { hashPassword } from '../scripts/password.mjs';
 
 export const TEST_PASSWORD = 'Synthetic-test-password-2026!';
 const defaultPasswordHash = await hashPassword(TEST_PASSWORD);
 const projectRoot = fileURLToPath(new URL('..', import.meta.url));
 
-export async function createApp({ publicOrigin, persist = false, persistenceRoot, passwordHash = defaultPasswordHash } = {}) {
+export async function createApp({ publicOrigin, persist = false, persistenceRoot, passwordHash = defaultPasswordHash, legacy = false, bindings = {} } = {}) {
   const result = await build({ absWorkingDir: projectRoot, entryPoints: ['worker/index.ts'], bundle: true, write: false,
     format: 'esm', platform: 'neutral', target: 'es2022', external: ['node:crypto', 'node:buffer'] });
   const mf = new Miniflare({ ...convertV4MiniflareOptions({ name: 'byob-test',
@@ -16,14 +16,17 @@ export async function createApp({ publicOrigin, persist = false, persistenceRoot
     compatibilityDate: '2026-11-01', compatibilityFlags: ['nodejs_compat'],
     d1Databases: { DB: 'byob-test-db' }, r2Buckets: { PHOTOS: 'byob-test-photos' },
     durableObjects: { PASSWORD_VERIFIER: { className: 'PasswordVerifier', useSQLite: true } },
-    bindings: { ADMIN_PASSWORD_HASH: passwordHash, ...(publicOrigin ? { PUBLIC_ORIGIN: publicOrigin } : {}) }
+    bindings: { ADMIN_PASSWORD_HASH: passwordHash, ...(publicOrigin ? { PUBLIC_ORIGIN: publicOrigin } : {}), ...bindings }
   }), ...(persist ? { resourcePersistencePath: persistenceRoot } : {}) });
   try {
     const db = await mf.getD1Database('DB');
     if (!await db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='event'").first()) {
-      const schema = await readFile(new URL('../migrations/0001_initial.sql', import.meta.url), 'utf8');
-      for (const statement of schema.replace(/^\uFEFF/, '').split(/;\s*(?:\r?\n|$)/).map(s => s.trim()).filter(Boolean)) {
-        await db.prepare(statement).run();
+      const folder = new URL(legacy ? './fixtures/legacy/' : '../migrations/', import.meta.url);
+      for (const file of (await readdir(folder)).filter(name => name.endsWith('.sql')).sort()) {
+        const schema = await readFile(new URL(file, folder), 'utf8');
+        for (const statement of schema.replace(/^\uFEFF/, '').split(/;\s*(?:\r?\n|$)/).map(s => s.trim()).filter(Boolean)) {
+          await db.prepare(statement).run();
+        }
       }
     }
     return { mf, db };

@@ -1,0 +1,1 @@
+This directory intentionally contains no SQL. Existing installations already use their original 12 migrations. Never apply `migrations/0001_initial.sql` to an existing database. The existing deployment command only publishes code and bindings; it does not run D1 migrations.

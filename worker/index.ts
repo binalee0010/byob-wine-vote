@@ -7,6 +7,8 @@ export interface Env {
   PASSWORD_VERIFIER: DurableObjectNamespace;
   ADMIN_PASSWORD_HASH?: string;
   PUBLIC_ORIGIN?: string;
+  ADMIN_SESSION_COOKIE?: string;
+  PARTICIPANT_SESSION_COOKIE?: string;
 }
 
 type ActivityId = 'byob';
@@ -27,6 +29,7 @@ const MAX_PHOTO = 5 * 1024 * 1024;
 const activeAdmin = "EXISTS(SELECT 1 FROM sessions WHERE token_hash=? AND role='admin' AND expires_at>?)";
 const activeParticipant = "EXISTS(SELECT 1 FROM sessions WHERE token_hash=? AND role='participant' AND participant_id=? AND expires_at>?)";
 const cookieNames = { admin: '__Host-byob_admin', participant: '__Host-byob_participant' };
+const noOtherActivityData = "NOT EXISTS(SELECT 1 FROM answers WHERE activity_id<>'byob') AND NOT EXISTS(SELECT 1 FROM activities WHERE id<>'byob' AND (started_at IS NOT NULL OR status<>'waiting' OR published<>0))";
 class ApiError extends Error {
   constructor(public status: number, message: string, public code = 'invalid_request') { super(message); }
 }
@@ -85,9 +88,14 @@ function sameOrigin(request: Request) { if (request.headers.get('origin') !== ne
 async function digest(value: string) { return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', encoder.encode(value))), b => b.toString(16).padStart(2, '0')).join(''); }
 function randomToken() { return Array.from(crypto.getRandomValues(new Uint8Array(32)), b => b.toString(16).padStart(2, '0')).join(''); }
 function readCookie(request: Request, name: string) { return request.headers.get('cookie')?.split(';').map(x => x.trim()).find(x => x.startsWith(`${name}=`))?.slice(name.length + 1) ?? ''; }
-function sessionCookie(role: 'admin' | 'participant', token: string, seconds: number) { return `${cookieNames[role]}=${token}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${seconds}`; }
+function cookieName(env: Env, role: 'admin' | 'participant') {
+  const name = (role === 'admin' ? env.ADMIN_SESSION_COOKIE : env.PARTICIPANT_SESSION_COOKIE) ?? cookieNames[role];
+  if (!/^__Host-[A-Za-z0-9_-]{1,64}$/.test(name)) fail(503, '세션 설정을 확인해 주세요.', 'session_unconfigured');
+  return name;
+}
+function sessionCookie(env: Env, role: 'admin' | 'participant', token: string, seconds: number) { return `${cookieName(env, role)}=${token}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${seconds}`; }
 async function session(request: Request, env: Env, role: 'admin' | 'participant'): Promise<Session | null> {
-  const token = readCookie(request, cookieNames[role]); if (!/^[a-f0-9]{64}$/.test(token)) return null;
+  const token = readCookie(request, cookieName(env, role)); if (!/^[a-f0-9]{64}$/.test(token)) return null;
   const version=role==='admin'?await credentialVersion(env):null;
   return env.DB.prepare("SELECT role,participant_id,token_hash FROM sessions WHERE token_hash=? AND role=? AND expires_at>? AND(role='participant' OR credential_version=?)").bind(await digest(token), role, Date.now(),version).first<Session>();
 }
@@ -99,7 +107,7 @@ async function requireParticipant(request: Request, env: Env) {
 }
 async function createSession(request: Request, env: Env, role: 'admin' | 'participant', participantId: string | null,version:string|null=null) {
   const token = randomToken(); const seconds = role === 'admin' ? 12 * 3600 : 30 * 24 * 3600;
-  const old = readCookie(request, cookieNames[role]);
+  const old = readCookie(request, cookieName(env, role));
   const result=await env.DB.batch([
     env.DB.prepare('DELETE FROM sessions WHERE token_hash=? OR expires_at<=?').bind(await digest(old), Date.now()),
     env.DB.prepare(`INSERT INTO sessions(token_hash,role,participant_id,expires_at,credential_version) SELECT ?,?,?,?,?
@@ -109,12 +117,12 @@ async function createSession(request: Request, env: Env, role: 'admin' | 'partic
   ]);
   if (!result[1].meta.changes && role === 'participant') fail(404, '등록된 이름을 확인해 주세요.', 'participant_not_found');
   if(!result[1].meta.changes)fail(409,'비밀번호가 변경되었습니다. 다시 로그인해 주세요.','credential_changed');
-  return sessionCookie(role, token, seconds);
+  return sessionCookie(env, role, token, seconds);
 }
 async function revoke(request: Request, env: Env, role: 'admin' | 'participant', all = false) {
   if (all) await env.DB.prepare("DELETE FROM sessions WHERE role='admin'").run();
-  else await env.DB.prepare('DELETE FROM sessions WHERE token_hash=? AND role=?').bind(await digest(readCookie(request, cookieNames[role])), role).run();
-  return json({ ok: true }, 200, { 'Set-Cookie': sessionCookie(role, '', 0) });
+  else await env.DB.prepare('DELETE FROM sessions WHERE token_hash=? AND role=?').bind(await digest(readCookie(request, cookieName(env, role))), role).run();
+  return json({ ok: true }, 200, { 'Set-Cookie': sessionCookie(env, role, '', 0) });
 }
 async function rateLimit(request: Request, env: Env, scope: string, limit: number) {
   const now = Date.now(), windowStart = Math.floor(now / 900000) * 900000;
@@ -146,7 +154,7 @@ async function changePassword(request:Request,env:Env,admin:Session) {
   if(response.status===403)fail(403,'현재 비밀번호가 일치하지 않습니다.','invalid_current_password');
   if(response.status===409)fail(409,'비밀번호 또는 세션이 변경되었습니다. 다시 로그인해 주세요.','credential_changed');
   if(!response.ok)fail(503,'관리자 비밀번호 설정을 확인해 주세요.','admin_unconfigured');
-  return json({ok:true},200,{'Set-Cookie':sessionCookie('admin','',0)});
+  return json({ok:true},200,{'Set-Cookie':sessionCookie(env,'admin','',0)});
 }
 async function activity(env: Env, id: ActivityId) { return await env.DB.prepare('SELECT * FROM activities WHERE id=?').bind(id).first<Activity>() ?? fail(404, '이벤트가 없습니다.'); }
 function activityRows(env: Env) {
@@ -177,24 +185,60 @@ function rankedResults(rows: HistoryCandidate[], method: VotingMethod) {
   const ranked = rankRows(rows, row => row.score, true);
   return ranked.map(c => ({ ...candidatePublic(c), candidateId: c.id, rank: c.rank, ...(method === 'winner' ? { votes: c.score } : { points: c.score }) }));
 }
-function historySummary(row: HistoryRow, summary: HistorySummary) {
+async function historySummary(row: HistoryRow, summary: HistorySummary) {
   const { title, activityTitle, startedAt, votingMethod, rankPoints, ballotCount } = summary;
-  return { id: row.id, title, activityTitle, startedAt, savedAt: row.saved_at, votingMethod: publicVotingMethod(votingMethod), rankPoints, ballotCount };
+  return { id: row.id, version: await digest(row.snapshot), title, activityTitle, startedAt, savedAt: row.saved_at, votingMethod: publicVotingMethod(votingMethod), rankPoints, ballotCount };
 }
 async function historyList(env: Env) {
-  const records = await env.DB.prepare("SELECT id,saved_at,json_remove(snapshot,'$.rows') AS snapshot FROM vote_history ORDER BY revision DESC").all<HistoryRow>();
-  return json({ records: records.results.map(row => historySummary(row, JSON.parse(row.snapshot))) });
+  const records = await env.DB.prepare('SELECT id,saved_at,snapshot FROM vote_history ORDER BY revision DESC').all<HistoryRow>();
+  return json({ records: await Promise.all(records.results.map(row => historySummary(row, JSON.parse(row.snapshot)))) });
+}
+async function historyRow(env: Env, id: string) {
+  return await env.DB.prepare('SELECT id,saved_at,snapshot FROM vote_history WHERE id=?').bind(id).first<HistoryRow>()
+    ?? fail(404, '저장한 투표 기록이 없습니다.');
 }
 async function historyDetail(env: Env, id: string) {
-  const row = await env.DB.prepare('SELECT id,saved_at,snapshot FROM vote_history WHERE id=?').bind(id).first<HistoryRow>();
-  if (!row) fail(404, '저장한 투표 기록이 없습니다.');
+  const row = await historyRow(env, id);
   const snapshot = JSON.parse(row.snapshot) as HistorySummary & { rows: HistoryCandidate[] };
   return json({ record: {
-    ...historySummary(row, snapshot),
+    ...await historySummary(row, snapshot),
     rows: rankedResults(snapshot.rows, snapshot.votingMethod).map(candidate => ({
       ...candidate, photoUrl: candidate.photoUrl ? `/api/admin/history/${row.id}/photos/${candidate.id}` : null
     }))
   } });
+}
+async function changeHistory(request: Request, env: Env, admin: Session, id: string) {
+  const data = await body(request, 1024 * 1024);
+  if (typeof data.expectedVersion !== 'string' || !/^[a-f0-9]{64}$/.test(data.expectedVersion)) fail(400, '투표 기록 버전을 확인해 주세요.');
+  const row = await historyRow(env, id);
+  if (await digest(row.snapshot) !== data.expectedVersion) fail(409, '투표 기록이 바뀌었습니다. 다시 열어 확인해 주세요.', 'history_changed');
+  let changed: D1Result;
+  if (request.method === 'DELETE') {
+    if (data.confirm !== 'delete-history') fail(400, '투표 기록 삭제를 확인해 주세요.');
+    // Archive deletion intentionally leaves photo objects and all current voting data intact.
+    changed = await env.DB.prepare(`DELETE FROM vote_history WHERE id=? AND snapshot=? AND ${activeAdmin}`)
+      .bind(id, row.snapshot, admin.token_hash, Date.now()).run();
+  } else {
+    const title = text(data.title, '모임 이름', 160);
+    const snapshot = JSON.parse(row.snapshot) as HistorySummary & { rows: HistoryCandidate[] };
+    if (!Array.isArray(data.names) || data.names.length > snapshot.rows.length) fail(400, '와인 이름을 확인해 주세요.');
+    const names = new Map<string, string>();
+    for (const entry of data.names) {
+      if (!entry || typeof entry !== 'object' || typeof entry.id !== 'string' || names.has(entry.id)
+        || !snapshot.rows.some(candidate => candidate.id === entry.id)) fail(400, '기록에 있는 와인을 확인해 주세요.');
+      names.set(entry.id, text(entry.name, '와인 이름', 160));
+    }
+    snapshot.title = title;
+    snapshot.rows = snapshot.rows.map(candidate => names.has(candidate.id) ? { ...candidate, name: names.get(candidate.id)! } : candidate);
+    changed = await env.DB.prepare(`UPDATE vote_history SET snapshot=? WHERE id=? AND snapshot=? AND ${activeAdmin}`)
+      .bind(JSON.stringify(snapshot), id, row.snapshot, admin.token_hash, Date.now()).run();
+  }
+  if (!changed.meta.changes) {
+    await requireAdmin(request, env);
+    await historyRow(env, id);
+    fail(409, '투표 기록이 바뀌었습니다. 다시 열어 확인해 주세요.', 'history_changed');
+  }
+  return request.method === 'DELETE' ? ok() : historyDetail(env, id);
 }
 async function historyPhoto(env: Env, id: string, candidateId: string) {
   const candidate = await env.DB.prepare(`SELECT json_extract(c.value,'$.object_key') AS object_key,
@@ -299,7 +343,16 @@ async function results(env: Env, id: ActivityId) {
   return json({ id, title: initial.title, mode: 'ranked-byob', votingMethod: publicVotingMethod(initial.voting_method),
     revision: initial.revision, rows: rankedResults(rows, initial.voting_method ?? 'full') });
 }
-async function adminState(env: Env) {
+function participantUrl(request: Request, env: Env) {
+  const configured = env.PUBLIC_ORIGIN;
+  if (!configured) return new URL('/', request.url).href;
+  try {
+    const url = new URL(configured);
+    if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) throw new Error('invalid origin');
+    return new URL('/', url.origin).href;
+  } catch { return fail(503, '참가 주소 설정을 확인해 주세요.', 'origin_unconfigured'); }
+}
+async function adminState(request: Request, env: Env) {
   const [event, activities, participants, candidateRows, cleanup, answers] = await env.DB.batch([
     env.DB.prepare('SELECT title,starts_at AS startsAt,timezone,participation_mode AS participationMode,roster_revision AS rosterRevision FROM event WHERE id=1'),
     env.DB.prepare("SELECT a.*,h.id AS current_history_id FROM activities a LEFT JOIN vote_history h ON h.revision=a.revision WHERE a.id='byob'"),
@@ -309,7 +362,7 @@ async function adminState(env: Env) {
   const { rosterRevision, ...metadata } = event.results[0] as { title: string; startsAt: string; timezone: string; participationMode: ParticipationMode; rosterRevision: number };
   const activityList = activities.results as (Activity & { current_history_id: string | null })[];
   return json({
-    mode: 'ranked-byob', event: metadata, rosterRevision, participantUrl: env.PUBLIC_ORIGIN,
+    mode: 'ranked-byob', event: metadata, rosterRevision, participantUrl: participantUrl(request, env),
     photoCleanupPending: (cleanup.results[0] as { count: number }).count,
     activities: activityList.map(a => ({ ...activityPublic(a), resultVisibility: a.publish_on_close ? 'public' : 'private', resultsLocked: Boolean(a.results_locked) })),
     participants: participants.results, candidates: (candidateRows.results as Candidate[]).map(candidatePublic),
@@ -503,14 +556,16 @@ async function resetRankedVote(request: Request, env: Env, admin: Session) {
   const data = await body(request);
   if (data.confirm !== 'reset-all') fail(400, '현재 투표 전체 초기화를 확인해 주세요.');
   const revision = revisionNumber(data.expectedRevision), rosterRevision = revisionNumber(data.expectedRosterRevision);
+  const rosterGuard = await sharedRosterGuard(env);
   const updated = await env.DB.prepare(`UPDATE activities SET status='waiting',published=0,publish_on_close=0,started_at=NULL,
     revision=revision+1,full_reset_revision=revision+1
     WHERE id='byob' AND revision=? AND EXISTS(SELECT 1 FROM event WHERE id=1 AND roster_revision=?)
-    AND ${activeAdmin} RETURNING revision`)
+    AND ${rosterGuard} AND ${activeAdmin} RETURNING revision`)
     .bind(revision, rosterRevision, admin.token_hash, Date.now()).first<{ revision: number }>();
   if (!updated) {
     await requireAdmin(request, env);
     sameRevision(await activity(env, 'byob'), revision);
+    await requireExclusiveRoster(env, rosterGuard);
     fail(409, '참가자 명단이 바뀌었습니다. 다시 확인해 주세요.', 'roster_changed');
   }
   return json({ ok: true, revision: updated.revision, cleanupPending: await retryCandidatePhotoCleanup(env) });
@@ -541,18 +596,29 @@ async function deleteParticipants(request: Request, env: Env, admin: Session, id
   const data = await body(request);
   if (data.confirm !== 'delete') fail(400, '참가자 삭제를 확인해 주세요.');
   const now = Date.now();
+  const rosterGuard = await sharedRosterGuard(env);
   const removed = id
-    ? await env.DB.prepare(`DELETE FROM participants WHERE id=? AND ${activeAdmin}`).bind(id, admin.token_hash, now).run()
+    ? await env.DB.prepare(`DELETE FROM participants WHERE id=? AND ${rosterGuard} AND ${activeAdmin}`).bind(id, admin.token_hash, now).run()
     : await env.DB.prepare(`WITH selection AS MATERIALIZED (
-        SELECT participants.id FROM participants CROSS JOIN event WHERE event.id=1 AND roster_revision=? AND ${activeAdmin}
+        SELECT participants.id FROM participants CROSS JOIN event WHERE event.id=1 AND roster_revision=? AND ${rosterGuard} AND ${activeAdmin}
       ) DELETE FROM participants WHERE id IN (SELECT id FROM selection)`)
       .bind(revisionNumber(data.expectedRosterRevision), admin.token_hash, now).run();
   if (!removed.meta.changes) {
     await requireAdmin(request, env);
+    await requireExclusiveRoster(env, rosterGuard);
     if (id) fail(404, '참가자가 없습니다.', 'participant_not_found');
     fail(409, '참가자 명단이 바뀌었거나 비어 있습니다. 다시 확인해 주세요.', 'roster_changed');
   }
   return ok();
+}
+async function sharedRosterGuard(env: Env) {
+  const legacyGrades = await env.DB.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='grades'").first();
+  return noOtherActivityData + (legacyGrades ? ' AND NOT EXISTS(SELECT 1 FROM grades)' : '');
+}
+async function requireExclusiveRoster(env: Env, guard: string) {
+  if (!await env.DB.prepare(`SELECT 1 AS safe WHERE ${guard}`).first()) {
+    fail(409, '다른 활동의 기록이 있어 참가자를 삭제할 수 없습니다.', 'shared_activity_data');
+  }
 }
 function imageType(bytes: Uint8Array) {
   if (bytes.length >= 12 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg';
@@ -819,9 +885,10 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (path === '/api/admin/history' && method === 'POST') return saveHistory(request, env, admin);
     const historyMatch = /^\/api\/admin\/history\/([^/]+)(?:\/photos\/([^/]+))?$/.exec(path);
     if (historyMatch && method === 'GET') return historyMatch[2] ? historyPhoto(env, historyMatch[1], historyMatch[2]) : historyDetail(env, historyMatch[1]);
+    if (historyMatch && !historyMatch[2] && ['PUT', 'DELETE'].includes(method)) return changeHistory(request, env, admin, historyMatch[1]);
     if (path === '/api/admin/reset-all' && method === 'POST') return resetRankedVote(request, env, admin);
     if(path==='/api/admin/password' && method==='POST')return changePassword(request,env,admin);
-    if (path === '/api/admin/state' && method === 'GET') return adminState(env);
+    if (path === '/api/admin/state' && method === 'GET') return adminState(request, env);
     if (path === '/api/admin/sessions' && method === 'DELETE') return revoke(request, env, 'admin', true);
     if (path === '/api/admin/event' && method === 'PATCH') return updateEvent(request, env, admin);
     if (path === '/api/admin/settings' && method === 'PATCH') return updateSettings(request, env, admin);

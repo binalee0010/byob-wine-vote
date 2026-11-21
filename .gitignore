@@ -5,3 +5,5 @@ dist/
 .env*
 coverage/
 *.log
+.deploy-existing.json
+wrangler.*.local.jsonc
