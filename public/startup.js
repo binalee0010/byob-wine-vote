@@ -3,7 +3,7 @@
   if (!retryLink) return;
   const marker = '__startup_retry';
   const url = new URL(location.href);
-  const title = '모두의 투표' + (/^\/v\/[^/]+\/?$/.test(url.pathname) ? '' : url.pathname === '/admin' ? ' · 투표 관리' : ' · 로그인');
+  const title = /^\/admin(?:\/p\/[^/]+)?\/?$/.test(url.pathname) ? '투표 관리' : '와인 인기투표';
   document.title = title;
   const heading = document.getElementById('startup-title');
   if (heading) heading.textContent = title;

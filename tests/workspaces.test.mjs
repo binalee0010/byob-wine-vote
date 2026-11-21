@@ -41,6 +41,7 @@ test('workspace provisioning preserves owner schema and rows, namespaces all con
   const sqlite = new DatabaseSync(':memory:');
   try {
     sqlite.exec(await readFile(new URL('../migrations/0001_initial.sql', import.meta.url), 'utf8'));
+    for(const file of ['0002_members.sql','0003_password_reset.sql','0004_candidate_description.sql','0005_member_polls.sql','0006_participant_entries.sql','0007_poll_deletion.sql'])sqlite.exec(await readFile(new URL(`../migrations/${file}`,import.meta.url),'utf8'));
     sqlite.exec("INSERT INTO participants VALUES('owner-person','Original person','original person')");
     const initial = sqlite.prepare("SELECT name,sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name").all();
     const db = d1(sqlite);

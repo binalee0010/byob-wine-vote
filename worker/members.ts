@@ -4,6 +4,7 @@ import { ensureWorkspace, type Workspace } from './workspaces';
 import { retryPendingNotices } from './signup-mail';
 import { confirmPasswordReset, PasswordResetError, requestPasswordReset } from './password-reset';
 import { memberPolls } from './polls';
+import { deleteMemberPoll } from './poll-deletion';
 
 type MemberRow = { id:string; email:string; role:'owner'|'member'; status:'pending'|'approved'|'rejected'; workspace_slug:string; namespace:string|null; password_hash:string|null; credential_version:string|null; created_at:number; reviewed_at:number|null };
 export type MemberSession = { id:string; email:string; role:MemberRow['role']; status:MemberRow['status']; workspaceSlug:string; namespace:string|null; csrfToken:string; tokenHash:string; credentialVersion:string };
@@ -58,7 +59,8 @@ function state(member:MemberSession|null) {return {authenticated:!!member,csrfTo
 
 export async function getWorkspaceBySlug(env:Env,slug:string):Promise<Workspace|null> {
   if(slug!=='owner' && !/^[a-f0-9]{32}$/.test(slug))return null;
-  const poll=await env.DB.prepare("SELECT p.namespace,m.id,m.email,m.role FROM member_polls p JOIN members m ON m.id=p.member_id WHERE p.slug=? AND m.status='approved'").bind(slug).first<{namespace:string|null;id:string;email:string;role:string}>();
+  if(await env.DB.prepare('SELECT 1 FROM member_polls WHERE slug=? AND deleted_at IS NOT NULL').bind(slug).first())return null;
+  const poll=await env.DB.prepare("SELECT p.namespace,m.id,m.email,m.role FROM member_polls p JOIN members m ON m.id=p.member_id WHERE p.slug=? AND p.deleted_at IS NULL AND m.status='approved'").bind(slug).first<{namespace:string|null;id:string;email:string;role:string}>();
   if(poll)return poll.role==='owner' && poll.email!==ownerEmail(env)?null:{slug,namespace:poll.namespace,memberId:poll.id};
   if(slug==='owner'){ownerEmail(env);return {slug:'owner',namespace:null,memberId:'owner'};}
   const row=await env.DB.prepare("SELECT id,workspace_slug,namespace,email,role FROM members WHERE workspace_slug=? AND status='approved'").bind(slug).first<{id:string;workspace_slug:string;namespace:string|null;email:string;role:string}>();
@@ -185,6 +187,8 @@ export async function handleMemberRequest(request:Request,env:Env,ctx?:Execution
     const member=await requireSession(request,env);
     if(method!=='GET')requireCsrf(request,member);
     if(path==='/api/members/polls')return await memberPolls(request,env,member,()=>body(request));
+    const pollDelete=/^\/api\/members\/polls\/([a-z0-9][a-z0-9-]{1,47})$/.exec(path);
+    if(pollDelete && method==='DELETE')return await deleteMemberPoll(env,member,pollDelete[1],await body(request));
     if(path==='/api/members/session' && method==='DELETE') {
       await env.DB.prepare('DELETE FROM member_sessions WHERE token_hash=?').bind(member.tokenHash).run();
       const headers=new Headers({'Set-Cookie':sessionCookie('',0)});headers.append('Set-Cookie',await revokeWorkspaceAdmin(request,env,workspace(member)));

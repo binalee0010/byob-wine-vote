@@ -35,7 +35,7 @@ test('public requests send canonical fragment links via the existing secure SMTP
     assert.deepEqual(await known.json(), await absent.json());
     assert.equal(globalThis.__resetMailMessages.length, 1);
     const message = globalThis.__resetMailMessages[0];
-    assert.equal(message.to, 'owner@example.test'); assert.equal(message.subject, '모두의 투표 비밀번호 재설정');
+    assert.equal(message.to, 'owner@example.test'); assert.equal(message.subject, '와인 인기투표 비밀번호 재설정');
     const link = new URL(message.text.match(/https:\/\/[^\s]+/)[0]), token = link.hash.slice('#reset='.length);
     assert.equal(link.origin, env.PUBLIC_ORIGIN); assert.equal(link.pathname, '/'); assert.equal(link.search, '');
     assert.match(token, /^[a-f0-9]{64}$/); assert(message.text.includes('30분'));

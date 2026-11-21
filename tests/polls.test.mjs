@@ -191,7 +191,7 @@ test('listing more than fifty initialized polls batches current titles and statu
     const response=await memberPolls(new Request('https://vote.test/api/members/polls'),{...bindings,DB},{...auth.body.member,namespace:null,csrfToken:auth.body.csrfToken},async()=>{throw new Error('GET must not read a body');});
     assert.equal(response.status,200);assert.deepEqual((await response.json()).polls,expected);
     assert.equal(prepared.filter(sql=>sql.includes('FROM (VALUES')).length,2);
-    assert(prepared.length<=5,`${prepared.length} queries for 55 ready polls`);
+    assert(prepared.length<=6,`${prepared.length} queries for 55 ready polls`);
     assert(prepared.every(sql=>!sql.includes('sqlite_master') && !sql.startsWith('CREATE')));
   }finally{await local.mf.dispose();}
 });
@@ -215,7 +215,7 @@ test('poll creation rejects a member revoked immediately before its atomic regis
 });
 
 test('fresh and existing poll migrations preserve original values, votes and archives while allowing closed descriptive correction',async()=>{
-  for(const [fresh,existing] of [['0004_candidate_description.sql','0015_candidate_description.sql'],['0005_member_polls.sql','0016_member_polls.sql']])
+  for(const [fresh,existing] of [['0004_candidate_description.sql','0015_candidate_description.sql'],['0005_member_polls.sql','0016_member_polls.sql'],['0007_poll_deletion.sql','0018_poll_deletion.sql']])
     assert.equal(await readFile(new URL(`../migrations/${fresh}`,import.meta.url),'utf8'),await readFile(new URL(`../migrations-existing/${existing}`,import.meta.url),'utf8'));
   const db=new DatabaseSync(':memory:');
   try{
@@ -224,7 +224,7 @@ test('fresh and existing poll migrations preserve original values, votes and arc
     const tables=['event','activities','participants','answers','vote_history','admin_credentials'];
     const before=Object.fromEntries(tables.map(table=>[table,db.prepare(`SELECT * FROM ${table}`).all()]));
     const wine=db.prepare('SELECT * FROM candidates').get();
-    for(const file of ['0004_candidate_description.sql','0005_member_polls.sql'])db.exec(await readFile(new URL(`../migrations/${file}`,import.meta.url),'utf8'));
+    for(const file of ['0004_candidate_description.sql','0005_member_polls.sql','0007_poll_deletion.sql'])db.exec(await readFile(new URL(`../migrations/${file}`,import.meta.url),'utf8'));
     assert.deepEqual(Object.fromEntries(tables.map(table=>[table,db.prepare(`SELECT * FROM ${table}`).all()])),before);
     assert.deepEqual({...db.prepare('SELECT * FROM candidates').get()},{...wine,description:''});
     db.prepare("UPDATE candidates SET name='Corrected wine',description='Region, vintage and grape' WHERE id='wine'").run();
@@ -233,4 +233,45 @@ test('fresh and existing poll migrations preserve original values, votes and arc
     assert.deepEqual(Object.fromEntries(tables.map(table=>[table,db.prepare(`SELECT * FROM ${table}`).all()])),before);
     assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(),[]);assert.equal(db.prepare('PRAGMA integrity_check').get().integrity_check,'ok');
   }finally{db.close();}
+});
+
+for(const legacy of [false,true])test(`poll-list re-entry preserves live results and all legacy snapshots without creating history (${legacy?'existing':'fresh'})`,async()=>{
+  const local=await createApp({bindings,legacy});
+  try{
+    if(legacy)for(const file of ['0002_members.sql','0003_password_reset.sql']){
+      const migration=await readFile(new URL(`../migrations/${file}`,import.meta.url),'utf8');
+      for(const sql of migration.split(/;\s*(?:\r?\n|$)/).map(sql=>sql.trim()).filter(Boolean))await local.db.prepare(sql).run();
+    }
+    const owner=memberClient(local.mf);await ownerLogin(owner);
+    const poll=(await owner('/api/members/polls','POST',{title:'Retained poll',requestId:'retained-poll-request'})).body.poll;
+    const other=(await owner('/api/members/polls','POST',{title:'Other poll',requestId:'other-poll-request'})).body.poll;
+    const snapshots=[];
+    for(let round=0;round<3;round++){
+      const current=await state(owner,poll.slug),revision=current.activities[0].revision;
+      const created=await owner(`${base(poll.slug)}/admin/candidates`,'POST',{name:`Wine ${round}`,description:`Original description ${round}`,requestId:`wine-round-${round}`,revision});assert.equal(created.status,200);const wine=created.body.candidate;
+      assert.equal((await owner(`${base(poll.slug)}/admin/settings`,'PATCH',{activities:[{id:'byob',revision,votingMethod:'winner'}]})).status,200);
+      assert.equal((await owner(`${base(poll.slug)}/admin/activities/byob/state`,'POST',{action:'open',revision})).status,200);
+      const person=client(local.mf);assert.equal((await person(`${base(poll.slug)}/session`,'POST',{name:`Participant ${round}`})).status,200);
+      assert.equal((await person(`${base(poll.slug)}/activities/byob/answer`,'PUT',{ranking:[wine.id],revision})).status,200);
+      assert.equal((await owner(`${base(poll.slug)}/admin/activities/byob/state`,'POST',{action:'close',revision})).status,200);
+      if(round<2){
+        const saved=await owner(`${base(poll.slug)}/admin/history`,'POST',expectation(await state(owner,poll.slug)));assert.equal(saved.status,200);
+        snapshots.push((await owner(`${base(poll.slug)}/admin/history/${saved.body.id}`)).body.record);
+        assert.equal((await owner(`${base(poll.slug)}/admin/reset-all`,'POST',{...expectation(await state(owner,poll.slug)),confirm:'reset-all'})).status,200);
+      }
+    }
+    const polls=(await owner('/api/members/polls')).body.polls;assert.equal(polls.find(row=>row.slug===poll.slug).status,'closed');
+    const before=await state(owner,polls.find(row=>row.slug===poll.slug).slug);assert.equal(before.currentHistoryId,null);assert.equal(before.activities[0].resultsLocked,false);assert.equal(before.submittedCount,1);
+    const history=(await owner(`${base(poll.slug)}/admin/history`)).body.records;assert.deepEqual(new Set(history.map(row=>row.id)),new Set(snapshots.map(row=>row.id)));
+    const renamed=await owner(`${base(poll.slug)}/admin/candidates/names`,'PUT',{revision:before.activities[0].revision,names:[{id:before.candidates[0].id,name:'Corrected live wine'}]});assert.equal(renamed.status,200);
+    const reread=await state(owner,poll.slug);assert.deepEqual(reread.candidates,before.candidates.map(row=>({...row,name:'Corrected live wine'})));assert.deepEqual(reread.byobResults,before.byobResults.map(row=>({...row,name:'Corrected live wine'})));assert.deepEqual(reread.answers,before.answers);
+    assert.equal(reread.currentHistoryId,null);assert.equal((await owner(`${base(other.slug)}/admin/history`)).body.records.length,0);
+    for(const record of snapshots){assert.deepEqual((await owner(`${base(poll.slug)}/admin/history/${record.id}`)).body.record,record);assert.equal((await owner(`${base(other.slug)}/admin/history/${record.id}`)).status,404)}
+    const old=snapshots[0];const edited=await owner(`${base(poll.slug)}/admin/history/${old.id}`,'PUT',{expectedVersion:old.version,title:'Corrected old title',names:[{id:old.rows[0].id,name:'Corrected old wine',description:'Corrected old description'}]});assert.equal(edited.status,200);assert.deepEqual(edited.body.record.rows,old.rows.map(row=>({...row,name:'Corrected old wine',description:'Corrected old description'})));
+    assert.deepEqual(await state(owner,poll.slug),reread);assert.deepEqual((await owner(`${base(poll.slug)}/admin/history/${snapshots[1].id}`)).body.record,snapshots[1]);
+    assert.equal((await owner(`${base(poll.slug)}/admin/history/${old.id}`,'DELETE',{expectedVersion:edited.body.record.version,confirm:'delete-history'})).status,200);assert.deepEqual((await owner(`${base(poll.slug)}/admin/history`)).body.records.map(row=>row.id),[snapshots[1].id]);assert.deepEqual(await state(owner,poll.slug),reread);
+    assert.equal((await owner(`${base(poll.slug)}/admin/activities/byob/state`,'POST',{action:'open',revision:reread.activities[0].revision})).status,200);
+    assert.equal((await owner(`${base(poll.slug)}/admin/candidates/names`,'PUT',{revision:reread.activities[0].revision,names:[{id:reread.candidates[0].id,name:'Blocked while open'}]})).status,409);
+    assert.deepEqual((await local.db.prepare('PRAGMA foreign_key_check').all()).results,[]);
+  }finally{await local.mf.dispose()}
 });

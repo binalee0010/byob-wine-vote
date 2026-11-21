@@ -193,17 +193,22 @@ test('standalone admin retains password login, management, password change and l
     requests.push([url, init]);
     if (url === '/api/admin/login') { loggedIn = true; return Response.json({ ok: true }); }
     if (url === '/api/admin/session' || url === '/api/admin/password') { loggedIn = false; return Response.json({ ok: true }); }
-    return loggedIn ? Response.json({ event: { title: 'Legacy event' }, activities: [], participants: [], candidates: [], submittedCount: 0, rosterRevision: 1 }) : Response.json({ error: '로그인 필요' }, { status: 401 });
+    return loggedIn ? Response.json({ event: { title: 'Legacy event' }, activities: [{ id: 'byob', title: 'Legacy question', revision: 1, status: 'waiting' }], participants: [], candidates: [], submittedCount: 0, rosterRevision: 1 }) : Response.json({ error: '로그인 필요' }, { status: 401 });
   };
   const app = mount(legacyApi.Admin);
   try {
     app.render(); await settle(); let tree = app.render(); assert.ok(button(tree, '로그인'));
-    assert.equal(globalThis.document.title, '모두의 투표 · 투표 관리');
-    assert.ok(nodes(tree).some(node => node.type === 'h1' && node.props.children === '투표 관리'));
-    const header = named(tree, 'AdminHeader'); assert.ok(nodes(header.type(header.props)).some(node => node.type === 'span' && node.props.children === '투표 관리'));
+    assert.equal(globalThis.document.title, '투표 관리');
+    const header = named(tree, 'AdminHeader'); assert.equal(header.props.title, '투표 관리');
+    assert.equal(nodes(tree).filter(node => node.type === 'h1').length, 0);
+    assert.equal(nodes(header.type(header.props)).filter(node => node.type === 'h1').length, 1);
     nodes(tree).find(node => node.type === 'input').props.onChange({ target: { value: 'legacy-password' } }); tree = app.render();
     nodes(tree).find(node => node.type === 'form').props.onSubmit({ preventDefault }); await settle(); tree = app.render();
     assert.ok(named(tree, 'Progress')); assert.equal(named(tree, 'AdminHeader').props.participantUrl, 'https://vote.example/');
+    assert.equal(named(tree, 'AdminHeader').props.title, 'Legacy event');
+    assert.equal(globalThis.document.title, 'Legacy event · 투표 관리');
+    const loggedInHeader = named(tree, 'AdminHeader');
+    assert.equal(nodes(loggedInHeader.type(loggedInHeader.props)).filter(node => node.type === 'button' && node.props.children === '로그아웃').length, 1);
     await named(tree, 'Progress').props.changePassword('legacy-password', 'new-password'); tree = app.render(); assert.ok(button(tree, '로그인'));
     nodes(tree).find(node => node.type === 'input').props.onChange({ target: { value: 'new-password' } }); tree = app.render(); nodes(tree).find(node => node.type === 'form').props.onSubmit({ preventDefault }); await settle(); tree = app.render();
     named(tree, 'AdminHeader').props.onLogout(); await settle(); tree = app.render(); assert.ok(button(tree, '로그인'));
@@ -349,7 +354,40 @@ test('logout returns to the root login and clears the previous vote title', asyn
     app.render(); await settle(); let tree = app.render(); named(tree, 'MemberPolls').props.onSettings(); tree = app.render();
     globalThis.document.title = 'Previous event · 투표 관리';
     await named(tree, 'MemberSettings').props.onLogout();
-    assert.deepEqual(globalThis.location.replacements, ['/']); assert.equal(globalThis.document.title, '모두의 투표 · 로그인');
+    assert.deepEqual(globalThis.location.replacements, ['/']); assert.equal(globalThis.document.title, '와인 인기투표 · 로그인');
+  } finally { app.close(); restore(); }
+});
+
+for (const path of ['/admin', '/admin/p/member-space']) test(`visible host logout revokes once and returns to login (${path})`, async () => {
+  const restore = environment(); globalThis.location.pathname = path; let finish; const requests = [];
+  globalThis.fetch = async (url, init) => {
+    requests.push([url, init]);
+    return init.method === 'GET' ? Response.json(session(member())) : new Promise(resolve => { finish = resolve; });
+  };
+  const app = mount(MemberPortal);
+  try {
+    app.render(); await settle(); let tree = app.render(); const screenName = path === '/admin' ? 'MemberPolls' : 'Admin';
+    assert.equal(named(tree, 'MemberSettings'), undefined);
+    const screen = named(tree, screenName); assert.equal(typeof screen.props.onLogout, 'function');
+    screen.props.onLogout(); screen.props.onLogout(); tree = app.render();
+    assert.equal(named(tree, screenName).props.loggingOut, true);
+    const deletes = requests.filter(([, init]) => init.method === 'DELETE'); assert.equal(deletes.length, 1);
+    assert.equal(deletes[0][0], '/api/members/session'); assert.equal(deletes[0][1].headers['X-Member-CSRF'], 'csrf-value');
+    finish(Response.json({ ok: true })); await settle(); tree = app.render();
+    assert.deepEqual(globalThis.location.replacements, ['/']); assert.ok(button(tree, '로그인'));
+    assert.equal(named(tree, screenName), undefined); assert.equal(globalThis.document.title, '와인 인기투표 · 로그인');
+  } finally { app.close(); restore(); }
+});
+
+for (const path of ['/admin', '/admin/p/member-space']) test(`failed host logout remains visible and can retry (${path})`, async () => {
+  const restore = environment(); globalThis.location.pathname = path;
+  globalThis.fetch = async (url, init) => init.method === 'GET' ? Response.json(session(member())) : Response.json({ error: '로그아웃 실패' }, { status: 503 });
+  const app = mount(MemberPortal);
+  try {
+    app.render(); await settle(); let tree = app.render(); const screenName = path === '/admin' ? 'MemberPolls' : 'Admin';
+    named(tree, screenName).props.onLogout(); await settle(); tree = app.render();
+    assert.equal(named(tree, screenName).props.sessionError, '로그아웃 실패'); assert.equal(named(tree, screenName).props.loggingOut, false);
+    assert.deepEqual(globalThis.location.replacements, []); assert.equal(named(tree, 'MemberSettings'), undefined);
   } finally { app.close(); restore(); }
 });
 
@@ -390,8 +428,11 @@ test('poll list opens independent polls and creates once with a stable retry req
   try {
     let tree = app.render(); assert.ok(nodes(tree).some(node => node.props?.role === 'status')); await settle(); tree = app.render();
     assert.deepEqual(nodes(tree).filter(node => node.type === 'a').map(node => node.props.href), ['/admin/p/old-poll', '/admin/p/other-poll']);
-    assert.equal(globalThis.document.title, '모두의 투표 · 내 투표 목록');
+    assert.equal(globalThis.document.title, '와인 인기투표 · 내 투표 목록');
+    assert.equal(named(tree, 'SiteHeader').props.title, '와인 인기투표');
+    assert.equal(nodes(tree).find(node => node.type === 'input').props.placeholder, undefined);
     const header = named(tree, 'SiteHeader'); button(header, '계정 설정').props.onClick(); assert.equal(settings, 1);
+    assert.equal(nodes(header).filter(node => node.type === 'button' && node.props.children === '로그아웃').length, 1);
     nodes(tree).find(node => node.type === 'input').props.onChange({ target: { value: '여행지' } }); tree = app.render();
     const submit = nodes(tree).find(node => node.type === 'form').props.onSubmit;
     setMemberCsrfToken('poll-csrf'); const first = submit({ preventDefault }); await submit({ preventDefault }); await first; tree = app.render();
@@ -404,6 +445,34 @@ test('poll list opens independent polls and creates once with a stable retry req
     assert.deepEqual(globalThis.location.assignments, ['/admin/p/new-poll']); assert.equal(nodes(tree).find(node => node.type === 'form'), undefined);
     await submit({ preventDefault }); assert.equal(requests.filter(([, init]) => init.method === 'POST').length, 2);
   } finally { app.close(); restore(); }
+});
+
+test('poll deletion keeps both rows on failure and removes only the confirmed row after success', async () => {
+  const restore = environment();
+  const polls = ['a','b'].map(slug => ({ slug, title: slug, status: 'closed' }));
+  let deletes = 0;
+  globalThis.fetch = async (path, init) => {
+    if (init.method === 'GET') return Response.json({ polls });
+    assert.equal(path, '/api/members/polls/a');
+    assert.equal(init.method, 'DELETE');
+    assert.equal(init.headers['X-Member-CSRF'], 'delete-csrf');
+    assert.deepEqual(JSON.parse(init.body), { confirm: 'delete-poll' });
+    return ++deletes === 1 ? Response.json({ error: '삭제 실패' }, { status: 503 }) : Response.json({ ok: true, slug: 'a' });
+  };
+  const onSessionEnded = () => assert.fail('session should remain active');
+  const app = mount(() => MemberPolls({ onSettings() {}, onLogout() {}, onSessionEnded }));
+  try {
+    setMemberCsrfToken('delete-csrf'); app.render(); await settle();
+    const controls = () => nodes(app.render()).filter(node => node.type?.name === 'DestructiveAction');
+    const first = controls()[0].props;
+    assert.equal(deletes,0); assert.equal(controls().length,2);
+    assert.ok(first.request.title.includes('‘a’'));
+    let error = '';
+    const confirm = () => first.action(first.request.path,first.request.method,first.request.body,{error:value=>{error=value;},success:first.request.success});
+    assert.equal(await confirm(),false); assert.equal(error,'삭제 실패'); assert.equal(controls().length,2);
+    const success = confirm(); assert.equal(await confirm(),false); assert.equal(await success,true);
+    assert.equal(deletes,2); assert.deepEqual(controls().map(node=>node.props.request.path),['/members/polls/b']);
+  } finally { setMemberCsrfToken(null); app.close(); restore(); }
 });
 
 test('poll list reloads failed reads and ends an expired member session without creating', async () => {
@@ -464,7 +533,7 @@ test('candidate descriptions submit only changed metadata and remain editable af
       try {
         const tree = app.render();
         assert.equal(named(tree, 'ServerTextInput').props.disabled, status === 'open'); assert.equal(named(tree, 'ServerTextArea').props.disabled, status === 'open');
-        assert.equal(!!button(tree, '후보 정보 저장'), status === 'closed'); assert.equal(button(tree, '삭제'), undefined);
+        assert.equal(!!button(tree, '와인 정보 저장'), status === 'closed'); assert.equal(button(tree, '삭제'), undefined);
         assert.equal(nodes(tree).filter(node => node.type === 'input' && node.props.type === 'file').length, 0);
       } finally { app.close(); }
     }

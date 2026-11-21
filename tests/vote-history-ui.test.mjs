@@ -5,14 +5,14 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
 
 const require=createRequire(import.meta.url);
-const bundle=await build({ stdin:{ contents:`export {default as VoteHistory, VoteHistoryDetail} from './VoteHistory'; export {default as DestructiveAction} from './DestructiveAction';`,resolveDir:fileURLToPath(new URL('../src',import.meta.url)),loader:'tsx'},bundle:true,write:false,format:'esm',platform:'browser',plugins:[{name:'history-test-hooks',setup(builder){
+const bundle=await build({ stdin:{ contents:`export {default as VoteHistory, VoteHistoryDetail} from './VoteHistory'; export {default as DestructiveAction} from './DestructiveAction'; export {default as Admin, Progress, RankedResponses} from './Admin';`,resolveDir:fileURLToPath(new URL('../src',import.meta.url)),loader:'tsx'},bundle:true,write:false,format:'esm',platform:'browser',plugins:[{name:'history-test-hooks',setup(builder){
   builder.onResolve({filter:/^react$/},()=>({path:'hooks',namespace:'test'}));
-  builder.onLoad({filter:/^hooks$/,namespace:'test'},()=>({contents:`export const useState=v=>globalThis.historyHooks.state(v); export const useRef=v=>globalThis.historyHooks.memo(()=>({current:v}),[]); export const useEffect=(fn,deps)=>globalThis.historyHooks.effect(fn,deps); export const useId=()=>globalThis.historyHooks.memo(()=> 'confirm-history',[]);`}));
+  builder.onLoad({filter:/^hooks$/,namespace:'test'},()=>({contents:`export const useState=v=>globalThis.historyHooks.state(v); export const useRef=v=>globalThis.historyHooks.memo(()=>({current:v}),[]); export const useEffect=(fn,deps)=>globalThis.historyHooks.effect(fn,deps); export const useId=()=>globalThis.historyHooks.memo(()=> 'confirm-history',[]); export const useMemo=(fn,deps)=>globalThis.historyHooks.memo(fn,deps); export const useCallback=(fn,deps)=>globalThis.historyHooks.memo(()=>fn,deps);`}));
   builder.onResolve({filter:/^\.\/App$/},()=>({path:'app',namespace:'test'}));
-  builder.onLoad({filter:/^app$/,namespace:'test'},()=>({contents:`export function Notice(props){return props.children};export function PhotoDialog(){return null};export function RankedResultList(){return null}`}));
+  builder.onLoad({filter:/^app$/,namespace:'test'},()=>({contents:`export function Notice(props){return props.children};export function PhotoDialog(){return null};export function RankedResultList(){return null};export function Status(){return null}`}));
   builder.onResolve({filter:/^react\/jsx-runtime$/},({path})=>({path:pathToFileURL(require.resolve(path)).href,external:true}));
 }}]});
-const {VoteHistory,VoteHistoryDetail,DestructiveAction}=await import('data:text/javascript;base64,'+Buffer.from(bundle.outputFiles[0].text).toString('base64'));
+const {VoteHistory,VoteHistoryDetail,DestructiveAction,Admin,Progress,RankedResponses}=await import('data:text/javascript;base64,'+Buffer.from(bundle.outputFiles[0].text).toString('base64'));
 const nodes=tree=>!tree||typeof tree!=='object'?[]:Array.isArray(tree)?tree.flatMap(nodes):[tree,...nodes(tree.props?.children)];
 const byType=(tree,type)=>nodes(tree).find(node=>node.type===type);
 const byName=(tree,name)=>nodes(tree).find(node=>node.type?.name===name);
@@ -66,7 +66,7 @@ test('history save and delete immediately update the loaded list without another
   try{
     app.render();await settle();let tree=app.render();nodes(tree).find(node=>node.type==='button'&&node.props.id==='history-entry-'+record.id).props.onClick();app.render();await settle();tree=app.render();
     let detail=byName(tree,'VoteHistoryDetail');detail.props.onSaved({...record,title:'바로 바뀐 모임',version:'saved-version'});detail.props.onBack();tree=app.render();assert.ok(JSON.stringify(tree).includes('바로 바뀐 모임'));assert.equal(calls,2);
-    nodes(tree).find(node=>node.type==='button'&&node.props.id==='history-entry-'+record.id).props.onClick();app.render();await settle();tree=app.render();detail=byName(tree,'VoteHistoryDetail');detail.props.onDeleted(record.id);tree=app.render();assert.ok(JSON.stringify(tree).includes('저장된 투표 기록이 없습니다.'));assert.equal(calls,3);
+    nodes(tree).find(node=>node.type==='button'&&node.props.id==='history-entry-'+record.id).props.onClick();app.render();await settle();tree=app.render();detail=byName(tree,'VoteHistoryDetail');detail.props.onDeleted(record.id);tree=app.render();assert.equal(tree,null);assert.equal(calls,3);
   }finally{app.close();restore()}
 });
 
@@ -102,4 +102,56 @@ for (const change of ['title-only', 'one-name', 'all-names']) test(`101-wine his
     else assert.equal(submitted.names.length,101);
     assert.equal(record.version,'updated-version');
   }finally{app.close();restore()}
+});
+
+test('normal polls never render an empty saved-record section or create an archive',async()=>{
+  const restore=environment();const requests=[];
+  globalThis.fetch=async(path,init)=>{requests.push([path,init.method]);return Response.json({records:[]})};
+  const app=mount(VoteHistory);
+  try{assert.equal(app.render(),null);await settle();assert.equal(app.render(),null);assert.deepEqual(requests,[['/api/admin/history','GET']]);}
+  finally{app.close();restore()}
+});
+
+test('all old snapshots remain selectable after a reset, and deleting one retains the others',async()=>{
+  const restore=environment();const records=[savedRecord(),{...savedRecord(),id:'older/id',title:'이전 기록'}];
+  globalThis.fetch=async(path)=>Response.json(path.endsWith('/admin/history')?{records}:{record:records.find(row=>path.endsWith(encodeURIComponent(row.id)))});
+  const app=mount(VoteHistory);
+  try{
+    app.render();await settle();let tree=app.render();assert.equal(nodes(tree).filter(node=>node.props?.className==='history-entry').length,2);
+    assert.ok(JSON.stringify(tree).includes('저장된 기록'));assert.ok(!JSON.stringify(tree).includes('지난 투표'));
+    nodes(tree).find(node=>node.props?.id==='history-entry-older/id').props.onClick();app.render();await settle();tree=app.render();let detail=byName(tree,'VoteHistoryDetail');assert.equal(detail.props.record.title,'이전 기록');
+    detail.props.onDeleted('older/id');tree=app.render();assert.equal(nodes(tree).filter(node=>node.props?.className==='history-entry').length,1);
+    nodes(tree).find(node=>node.props?.id==='history-entry-saved/id').props.onClick();app.render();await settle();tree=app.render();assert.equal(byName(tree,'VoteHistoryDetail').props.record.id,'saved/id');
+  }finally{app.close();restore()}
+});
+
+const liveState=status=>({event:{title:'현재 투표'},activities:[{id:'byob',title:'질문',revision:7,status,started:status!=='waiting',published:false,resultsLocked:false,resultVisibility:'private',votingMethod:'winner'}],participants:[],rosterRevision:2,submittedCount:3,photoCleanupPending:0,candidates:[{id:'wine-a',number:1,name:'원래 이름',description:'보존할 설명',photoUrl:'/photo-a'}],byobResults:[{id:'wine-a',candidateId:'wine-a',number:1,name:'원래 이름',description:'보존할 설명',photoUrl:'/photo-a',rank:1,votes:3}]});
+
+test('results save changed names once with the existing identity and revision, retain drafts after failures, and honor the live lock',async()=>{
+  const restore=environment();const NativeFormData=globalThis.FormData;let fail=true;const requests=[];let state=liveState('closed');
+  globalThis.FormData=class extends NativeFormData{constructor(form){super();for(const [key,value] of Object.entries(form))this.set(key,value)}};
+  const action=async(path,method,body,feedback)=>{requests.push({path,method,body,success:feedback.success});if(fail){feedback.error('다시 시도해 주세요.');return false}state={...state,candidates:state.candidates.map(row=>({...row,name:body.names[0].name})),byobResults:state.byobResults.map(row=>({...row,name:body.names[0].name}))};return true};
+  const app=mount(()=>RankedResponses({state,action,busy:false}));let input;
+  try{
+    let tree=app.render();assert.ok(!JSON.stringify(tree).includes('기록에 저장'));assert.ok(button(tree,'와인 이름 수정'));
+    button(tree,'와인 이름 수정').props.onClick();tree=app.render();const list=byName(tree,'RankedResultList');const before=structuredClone(list.props.rows);
+    const editor=list.props.nameEditor(state.byobResults[0]);assert.equal(editor.props.name,'wine-a');assert.equal(editor.props.serverValue,'원래 이름');
+    input=mount(()=>editor.type(editor.props));let inputTree=input.render();inputTree.props.onChange({target:{value:'수정할 이름'}});assert.equal(input.render().props.value,'수정할 이름');
+    await byType(tree,'form').props.onSubmit({preventDefault,currentTarget:{'wine-a':'수정할 이름'}});tree=app.render();assert.ok(JSON.stringify(tree).includes('다시 시도해 주세요.'));assert.equal(input.render().props.value,'수정할 이름');assert.ok(byName(tree,'RankedResultList').props.nameEditor);
+    assert.deepEqual(byName(tree,'RankedResultList').props.rows,before);assert.deepEqual(requests[0],{path:'/admin/candidates/names',method:'PUT',body:{revision:7,names:[{id:'wine-a',name:'수정할 이름'}]},success:'와인 정보 1개를 저장했습니다.'});
+    fail=false;let release;const pending=new Promise(resolve=>{release=resolve});const slow=async(...args)=>{await pending;return action(...args)};
+    const successApp=mount(()=>RankedResponses({state,action:slow,busy:false}));try{let savedTree=successApp.render();button(savedTree,'와인 이름 수정').props.onClick();savedTree=successApp.render();const submit=byType(savedTree,'form').props.onSubmit;const first=submit({preventDefault,currentTarget:{'wine-a':'최종 이름'}});await submit({preventDefault,currentTarget:{'wine-a':'최종 이름'}});release();await first;savedTree=successApp.render();assert.equal(requests.length,2);assert.equal(byName(savedTree,'RankedResultList').props.nameEditor,undefined);assert.equal(state.candidates[0].name,'최종 이름');assert.deepEqual(state.byobResults[0],{...before[0],name:'최종 이름'});}finally{successApp.close()}
+    for(const status of ['waiting','open']){const lockedApp=mount(()=>RankedResponses({state:liveState(status),action,busy:false}));try{const lockedTree=lockedApp.render();assert.equal(!!button(lockedTree,'와인 이름 수정'),status==='waiting')}finally{lockedApp.close()}}
+  }finally{input?.close();app.close();globalThis.FormData=NativeFormData;restore()}
+});
+
+test('admin results contain saved snapshots within the poll and reset explicitly describes permanent current-result loss',async()=>{
+  const restore=environment();const previousLocation=globalThis.location;globalThis.location={origin:'https://vote.test',pathname:'/admin/p/one'};
+  const state=liveState('closed');globalThis.fetch=async()=>Response.json(state);
+  const app=mount(()=>Admin({member:{id:'member',email:'m@example.test',role:'member',status:'approved',workspaceSlug:'one'},pollSlug:'one'}));let progress;
+  try{
+    app.render();await settle();let tree=app.render();const tabs=nodes(tree).find(node=>node.type==='nav');assert.deepEqual(nodes(tabs).filter(node=>node.type==='button').map(node=>node.props.children),['투표 진행','제출 현황','후보 등록','투표 결과']);assert.equal(byName(tree,'VoteHistory'),undefined);
+    button(tree,'투표 결과').props.onClick();tree=app.render();assert.ok(byName(tree,'RankedResponses'));assert.ok(byName(tree,'VoteHistory'));assert.ok(!JSON.stringify(tree).includes('지난 투표'));
+    progress=mount(()=>Progress({state,action:async()=>true,busy:false}));const reset=byName(progress.render(),'DestructiveAction');assert.ok(reset.props.request.description.includes('현재 결과를 삭제'));assert.ok(reset.props.request.description.includes('이전에 저장된 기록'));assert.ok(reset.props.request.description.includes('되돌릴 수 없습니다'));assert.ok(!reset.props.request.description.includes('저장하지 않은'));
+  }finally{await settle();progress?.close();app.close();globalThis.location=previousLocation;restore()}
 });

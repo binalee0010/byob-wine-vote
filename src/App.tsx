@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type MouseEvent, type SetStateAction } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode, type SetStateAction } from 'react';
 import { api, ApiError, isParticipantChanged, participantChangedMessage, saveActivityAnswer, statusText, type Activity, type Bootstrap, type ByobResult, type Candidate, type Detail, type Id, type Participant, type Results, type VotingMethod } from './api';
 import MemberPortal from './MemberPortal';
 import Admin from './Admin';
@@ -24,7 +24,7 @@ export function PhotoDialog({ photo, onClose }: {
         return () => { ref.current?.close(); previous?.focus(); };
     } }, [photo]);
     return <dialog ref={ref} className="photo-dialog" aria-labelledby={titleId} onCancel={onClose} onClick={e => { if (e.target === e.currentTarget)
-        onClose(); }}><div className="row spread"><h2 id={titleId}>{photo?.name}</h2><button type="button" onClick={onClose} aria-label="후보 상세 닫기">닫기</button></div>{photo?.description && <p className="candidate-description">{photo.description}</p>}{photo?.photoUrl && <img src={photo.photoUrl} alt={photo.name + ' 확대 사진'}/>}</dialog>;
+        onClose(); }}><div className="row spread"><h2 id={titleId}>{photo?.name}</h2><button type="button" onClick={onClose} aria-label="와인 상세 닫기">닫기</button></div>{photo?.description && <p className="candidate-description">{photo.description}</p>}{photo?.photoUrl && <img src={photo.photoUrl} alt={photo.name + ' 확대 사진'}/>}</dialog>;
 }
 export default function App() {
     const [standalone, setStandalone] = useState(false);
@@ -73,8 +73,10 @@ function ParticipantApp() {
             return next;
         }
         catch (error) {
-            if (epoch === pollEpoch.current)
+            if (epoch === pollEpoch.current) {
+                if (error instanceof ApiError && (error.status === 404 || error.status === 410)) setData(null);
                 setConnectionError((error as Error).message);
+            }
             throw error;
         }
     }, []);
@@ -292,12 +294,12 @@ export function SingleWineBallot({ candidates, selectedId, disabled, onSelect, o
 }) {
     const radio = (candidate: Candidate) => <input type="radio" name="wine" value={candidate.id} checked={selectedId === candidate.id} onChange={() => onSelect(candidate.id)} disabled={disabled} required/>;
     return <fieldset className="compact-single-ballot">
-    <legend>가장 마음에 든 후보 하나를 골라 주세요</legend>
+    <legend>가장 마음에 든 와인 하나를 골라 주세요</legend>
     <ul className="ranked-result-list" role="list">
       {candidates.map(candidate => <li className={'single-choice-row' + (selectedId === candidate.id ? ' selected' : '')} key={candidate.id}>
         <CandidatePhoto candidate={candidate} onPhoto={onPhoto} compact/>
         <label className="single-choice-label">
-          <span className="ranked-result-wine"><small>후보 {candidate.number}</small><strong>{candidate.name}</strong></span>
+          <span className="ranked-result-wine"><small>와인 {candidate.number}</small><strong>{candidate.name}</strong></span>
           {radio(candidate)}
         </label>
       </li>)}
@@ -327,8 +329,8 @@ export function CustomRankBallot({ candidates, ranking, rankPoints, disabled, on
         onMove(id, place);
     }
     return <fieldset className="custom-rank-ballot">
-    <legend>{`후보 ${rankPoints.length}개의 순위를 정해 주세요`}</legend>
-    <p className="muted">{'후보마다 남은 순위를 고르세요.'}{rankPoints.length > 1 && ' 선택한 후보는 위·아래 버튼으로 순서를 바꿀 수 있어요.'}</p>
+    <legend>{`와인 ${rankPoints.length}개의 순위를 정해 주세요`}</legend>
+    <p className="muted">{'와인마다 남은 순위를 고르세요.'}{rankPoints.length > 1 && ' 선택한 와인은 위·아래 버튼으로 순서를 바꿀 수 있어요.'}</p>
     <p className="rank-draft" role="status">{ranking.filter(Boolean).length} / {rankPoints.length}개 선택</p>
     {ranking.some(Boolean) && <ol className="custom-rank-summary" aria-label="선택한 순위" role="list">
       {ranking.map((id, place) => {
@@ -347,7 +349,7 @@ export function CustomRankBallot({ candidates, ranking, rankPoints, disabled, on
     <ul className="ranked-result-list" role="list">
       {candidates.map(candidate => <li className="custom-rank-row" key={candidate.id}>
         <CandidatePhoto candidate={candidate} onPhoto={onPhoto} compact/>
-        <div className="ranked-result-wine"><small>후보 {candidate.number}</small><strong>{candidate.name}</strong></div>
+        <div className="ranked-result-wine"><small>와인 {candidate.number}</small><strong>{candidate.name}</strong></div>
         <select className="activity-reveal-select" aria-label={candidate.name + ' 순위'} disabled={disabled} value={ranking.includes(candidate.id) ? ranking.indexOf(candidate.id) : ''} onChange={event => onSelect(candidate.id, event.target.value === '' ? null : Number(event.target.value))}>
           <option value="">미선택</option>
           {rankPoints.map((points, place) => (!ranking[place] || ranking[place] === candidate.id) && <option key={place} value={place}>{place + 1}위 · {points.toLocaleString('ko-KR')}점</option>)}
@@ -356,17 +358,18 @@ export function CustomRankBallot({ candidates, ranking, rankPoints, disabled, on
     </ul>
   </fieldset>;
 }
-export function RankedResultList({ rows, onPhoto, method = 'full' }: {
+export function RankedResultList({ rows, onPhoto, method = 'full', nameEditor }: {
     rows: ByobResult[];
     onPhoto: (candidate: Candidate) => void;
     method?: VotingMethod;
+    nameEditor?: (row: ByobResult) => ReactNode;
 }) {
     const ranks = rows.map(row => row.rank);
-    return <ol className="ranked-result-list" role="list" aria-label={method === 'winner' ? '후보별 순위와 득표수' : '후보별 순위와 총점'}>
+    return <ol className="ranked-result-list" role="list" aria-label={method === 'winner' ? '와인별 순위와 득표수' : '와인별 순위와 총점'}>
     {rows.map(row => <li className="ranked-result-row" key={row.candidateId}>
       <strong className="ranked-result-rank">{rankLabel(row.rank, ranks)}</strong>
       <CandidatePhoto candidate={{ ...row, id: row.candidateId }} onPhoto={onPhoto} compact/>
-      <div className="ranked-result-wine"><small>후보 {row.number}</small><strong>{row.name}</strong></div>
+      <div className="ranked-result-wine"><small>와인 {row.number}</small>{nameEditor ? nameEditor(row) : <strong>{row.name}</strong>}</div>
       <strong className="ranked-result-points">{'points' in row ? row.points + '점' : row.votes + '표'}</strong>
     </li>)}
   </ol>;

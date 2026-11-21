@@ -104,8 +104,8 @@ export default function MemberPortal({ onStandalone }: { onStandalone?: () => vo
   }
   const member = session?.authenticated ? session.member : null;
   if (!resetting && member?.status === 'approved') return <>
-    {pollSlug ? <Admin member={member} pollSlug={pollSlug} onSettings={() => { setError(''); setSettings(true); }} onSessionEnded={sessionEnded}/>
-      : <MemberPolls onSettings={() => { setError(''); setSettings(true); }} onSessionEnded={sessionEnded}/>}
+    {pollSlug ? <Admin member={member} pollSlug={pollSlug} onSettings={() => { setError(''); setSettings(true); }} onLogout={() => { void logout().catch(() => {}); }} loggingOut={busy} sessionError={error} onSessionEnded={sessionEnded}/>
+      : <MemberPolls onSettings={() => { setError(''); setSettings(true); }} onLogout={() => { void logout().catch(() => {}); }} loggingOut={busy} sessionError={error} onSessionEnded={sessionEnded}/>}
     {settings && <MemberSettings member={member} busy={busy} error={error} onClose={() => { setSettings(false); setError(''); }} onLogout={logout} onChangePassword={changePassword} onSessionEnded={sessionEnded}/>}
   </>;
   return <div className="participant-shell ballot-shell member-shell"><SiteHeader title={siteTitle}/><main>

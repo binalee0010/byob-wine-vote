@@ -4,6 +4,10 @@ import participantEntries from '../migrations/0006_participant_entries.sql';
 
 export type Workspace = { slug: string; namespace: string | null; memberId?: string };
 
+export async function workspaceDeleted(env: {DB:D1Database}, workspace:Workspace) {
+  return Boolean(await env.DB.prepare('SELECT 1 FROM member_polls WHERE slug=? AND deleted_at IS NOT NULL').bind(workspace.slug).first());
+}
+
 const namespacePattern = /^m_[a-f0-9]{32}$/;
 const objectNames = new Set(Array.from(`${initialSchema}\n${participantEntries}`.matchAll(/CREATE\s+(?:TABLE|INDEX|TRIGGER)\s+(\w+)/gi), match => match[1].toLowerCase()));
 // SQL values and comments must stay literal, including JSON paths and the BYOB activity ID.
@@ -50,11 +54,12 @@ export async function ensureWorkspace(env: { DB: D1Database }, workspace: Worksp
   const statements = `${exists ? '' : initialSchema}\n${descriptionExists ? '' : candidateDescription}\n${entriesExist ? '' : participantEntries}`.split(/;\s*(?:\r?\n|$)/).map(statement => statement.trim()).filter(statement => statement && !/^PRAGMA\b/i.test(statement));
   // D1 batches are atomic; IF NOT EXISTS and seed conflicts also allow concurrent first access.
   try {
-    await env.DB.batch(statements.map(statement => env.DB.prepare(workspaceSql(statement
+    await env.DB.batch([env.DB.prepare('UPDATE member_polls SET initialized=initialized WHERE slug=?').bind(workspace.slug), ...statements.map(statement => env.DB.prepare(workspaceSql(statement
       .replace(/^CREATE (TABLE|INDEX|TRIGGER)\b/i, 'CREATE $1 IF NOT EXISTS')
-      .replace(/^INSERT INTO\b/i, 'INSERT OR IGNORE INTO'), workspace.namespace!))));
+      .replace(/^INSERT INTO\b/i, 'INSERT OR IGNORE INTO'), workspace.namespace!)))]);
   } catch (error) {
     // Another first request may have completed the same atomic schema upgrade.
+    if(await workspaceDeleted(env,workspace))throw error;
     if (!await descriptionReady() || !await entriesReady()) throw error;
   }
 }
@@ -63,7 +68,7 @@ export function workspacePhotoKey(workspace: Workspace | undefined, key: string)
   return workspace?.namespace ? `members/${workspace.namespace}/${key}` : key;
 }
 
-function workspacePhotos(bucket: R2Bucket, workspace: Workspace): R2Bucket {
+function workspacePhotos(bucket: R2Bucket, workspace: Workspace, env?:{DB:D1Database}): R2Bucket {
   const prefix = workspace.namespace ? `members/${workspace.namespace}/` : null;
   const check = (key: string) => {
     if (prefix ? !key.startsWith(prefix) : key.startsWith('members/')) throw new Error('Photo outside workspace');
@@ -72,17 +77,27 @@ function workspacePhotos(bucket: R2Bucket, workspace: Workspace): R2Bucket {
   return new Proxy(bucket, {
     get(target, property) {
       if (property === 'get') return (key: string, options?: R2GetOptions) => target.get(check(key), options);
-      if (property === 'put') return (key: string, value: Parameters<R2Bucket['put']>[1], options?: R2PutOptions) => target.put(check(key), value, options);
+      if (property === 'put') return async (key: string, value: Parameters<R2Bucket['put']>[1], options?: R2PutOptions) => {
+        check(key);
+        if(env && await workspaceDeleted(env,workspace))throw new Error('poll_deleted');
+        const result=await target.put(key,value,options);
+        if(env && await workspaceDeleted(env,workspace)){
+          await env.DB.prepare('UPDATE member_polls SET cleanup_pending=1,cleanup_version=cleanup_version+1 WHERE slug=? AND deleted_at IS NOT NULL').bind(workspace.slug).run();
+          await target.delete(key);
+          throw new Error('poll_deleted');
+        }
+        return result;
+      };
       if (property === 'delete') return (key: string | string[]) => target.delete(Array.isArray(key) ? key.map(check) : check(key));
       throw new Error('Unsupported workspace photo operation');
     }
   });
 }
 
-export function workspaceEnv<T extends { DB: D1Database; PHOTOS: R2Bucket; ADMIN_SESSION_COOKIE?: string; PARTICIPANT_SESSION_COOKIE?: string }>(env: T, workspace: Workspace): T & { WORKSPACE: Workspace } {
+export function workspaceEnv<T extends { DB: D1Database; PHOTOS: R2Bucket; ADMIN_SESSION_COOKIE?: string; PARTICIPANT_SESSION_COOKIE?: string; SUPERADMIN_EMAIL?:string }>(env: T, workspace: Workspace): T & { WORKSPACE: Workspace } {
   checkWorkspace(workspace);
   const suffix = workspace.namespace ?? 'owner';
-  return { ...env, WORKSPACE: workspace, DB: workspaceDatabase(env.DB, workspace), PHOTOS: workspacePhotos(env.PHOTOS, workspace),
+  return { ...env, WORKSPACE: workspace, DB: workspaceDatabase(env.DB, workspace), PHOTOS: workspacePhotos(env.PHOTOS, workspace,env.SUPERADMIN_EMAIL?env:undefined),
     ADMIN_SESSION_COOKIE: workspace.namespace ? `__Host-byob_admin_${suffix}` : env.ADMIN_SESSION_COOKIE,
     PARTICIPANT_SESSION_COOKIE: workspace.namespace ? `__Host-byob_participant_${suffix}` : env.PARTICIPANT_SESSION_COOKIE };
 }

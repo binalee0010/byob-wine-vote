@@ -1,6 +1,7 @@
 import { PasswordVerifier } from './password-verifier';
 import { getMemberSession, getWorkspaceBySlug, handleMemberRequest, type MemberSession } from './members';
-import { ensureWorkspace, workspaceEnv, workspacePhotoKey, type Workspace } from './workspaces';
+import { ensureWorkspace, workspaceDeleted, workspaceEnv, workspacePhotoKey, type Workspace } from './workspaces';
+import { retryDeletedPollPhotos } from './poll-deletion';
 import { retryPendingNotices } from './signup-mail';
 export { PasswordVerifier };
 export interface Env {
@@ -45,12 +46,14 @@ function memberAuthorization(env: Env) {
     WHERE ms.token_hash='${member.tokenHash}' AND ms.expires_at>${Date.now()} AND m.status='approved'
     AND ((m.role='member' AND ms.credential_version=m.credential_version)
       OR m.role='owner')
-    AND ${owner ? `m.id='${owner}'` : `m.namespace ${namespace ? `='${namespace}'` : 'IS NULL'}`})`;
+    AND ${owner ? `m.id='${owner}'` : `m.namespace ${namespace ? `='${namespace}'` : 'IS NULL'}`})
+    AND NOT EXISTS(SELECT 1 FROM member_polls WHERE slug='${env.WORKSPACE?.slug ?? 'owner'}' AND deleted_at IS NOT NULL)`;
 }
 function activeAdmin(env: Env) {
   const local = "EXISTS(SELECT 1 FROM sessions WHERE token_hash=? AND role='admin' AND expires_at>?)";
   return env.SUPERADMIN_EMAIL ? `(?='${env.MEMBER_SESSION?.tokenHash ?? ''}' AND ?>0) AND ${memberAuthorization(env)}` : local;
 }
+function activePoll(env:Env) {return env.SUPERADMIN_EMAIL && env.WORKSPACE?`NOT EXISTS(SELECT 1 FROM member_polls WHERE slug='${env.WORKSPACE.slug}' AND deleted_at IS NOT NULL)`:'1';}
 const activeParticipant = "EXISTS(SELECT 1 FROM sessions WHERE token_hash=? AND role='participant' AND participant_id=? AND expires_at>?)";
 const cookieNames = { admin: '__Host-byob_admin', participant: '__Host-byob_participant' };
 const noOtherActivityData = "NOT EXISTS(SELECT 1 FROM answers WHERE activity_id<>'byob') AND NOT EXISTS(SELECT 1 FROM activities WHERE id<>'byob' AND (started_at IS NOT NULL OR status<>'waiting' OR published<>0))";
@@ -200,6 +203,7 @@ export async function legacyAdminCredential(env: Env) {
   return { passwordHash: credential.password_hash, version };
 }
 export async function memberAdminSession(request: Request, env: Env, workspace: Workspace) {
+  if(await workspaceDeleted(env,workspace))return sessionCookie(workspaceEnv(env,workspace),'admin','',0);
   await ensureWorkspace(env, workspace);
   const scoped = workspaceEnv(env, workspace);
   if (workspace.namespace) {
@@ -291,13 +295,13 @@ async function changeHistory(request: Request, env: Env, admin: Session, id: str
   } else {
     const title = text(data.title, '모임 이름', 160);
     const snapshot = JSON.parse(row.snapshot) as HistorySummary & { rows: HistoryCandidate[] };
-    if (!Array.isArray(data.names) || data.names.length > snapshot.rows.length) fail(400, '후보 이름을 확인해 주세요.');
+    if (!Array.isArray(data.names) || data.names.length > snapshot.rows.length) fail(400, '와인 이름을 확인해 주세요.');
     const names = new Map<string, {name:string;description?:string}>();
     for (const entry of data.names) {
       if (!entry || typeof entry !== 'object' || typeof entry.id !== 'string' || names.has(entry.id)
-        || !snapshot.rows.some(candidate => candidate.id === entry.id)) fail(400, '기록에 있는 후보를 확인해 주세요.');
+        || !snapshot.rows.some(candidate => candidate.id === entry.id)) fail(400, '기록에 있는 와인을 확인해 주세요.');
       const original = snapshot.rows.find(candidate => candidate.id === entry.id)!;
-      names.set(entry.id, {name:entry.name === original.name ? original.name : text(entry.name, '후보 이름', 160),...(entry.description === undefined ? {} : {description:entry.description === original.description ? original.description : text(entry.description, '후보 설명', 2000, false)})});
+      names.set(entry.id, {name:entry.name === original.name ? original.name : text(entry.name, '와인 이름', 160),...(entry.description === undefined ? {} : {description:entry.description === original.description ? original.description : text(entry.description, '와인 설명', 2000, false)})});
     }
     snapshot.title = title;
     snapshot.rows = snapshot.rows.map(candidate => names.has(candidate.id) ? { ...candidate, ...names.get(candidate.id)! } : candidate);
@@ -382,26 +386,26 @@ async function submit(request: Request, env: Env, id: ActivityId) {
     || !Array.isArray(ranking) || !ranking.length
     || ranking.some(candidateId => typeof candidateId !== 'string' || !candidateId.length || candidateId.length > 80)
     || new Set(ranking).size !== ranking.length) {
-    fail(400, '투표 방식에 맞는 후보를 한 번씩 선택해 주세요.', 'invalid_ranking');
+    fail(400, '투표 방식에 맞는 와인을 한 번씩 선택해 주세요.', 'invalid_ranking');
   }
   let result: D1Result;
   try {
     result = await env.DB.prepare(`INSERT INTO answers(activity_id,participant_id,payload,updated_at)
       SELECT ?,?,?,? WHERE EXISTS(SELECT 1 FROM activities WHERE id=? AND revision=? AND status='open' AND published=0)
-        AND EXISTS(SELECT 1 FROM participants WHERE id=?) AND ${activeParticipant}
+        AND EXISTS(SELECT 1 FROM participants WHERE id=?) AND ${activeParticipant} AND ${activePoll(env)}
       ON CONFLICT(activity_id,participant_id) DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at`)
       .bind(id, participant.id, JSON.stringify({ ranking }), new Date().toISOString(), id, revision, participant.id,
         participant.token_hash, participant.id, Date.now()).run();
   } catch (error) {
     if (error instanceof Error && error.message.includes('candidate_missing')) {
-      fail(400, '투표 방식에 맞는 후보를 한 번씩 선택해 주세요.', 'invalid_ranking');
+      fail(400, '투표 방식에 맞는 와인을 한 번씩 선택해 주세요.', 'invalid_ranking');
     }
     throw error;
   }
   if (!result.meta.changes) {
     sameRevision(await activity(env, id), revision);
     checkParticipantIdentity(participant.id, (await requireParticipant(request, env)).id);
-    fail(409, '참여 상태나 후보가 변경되었습니다. 다시 확인해 주세요.', 'activity_closed');
+    fail(409, '참여 상태나 와인이 변경되었습니다. 다시 확인해 주세요.', 'activity_closed');
   }
   return ok();
 }
@@ -596,7 +600,7 @@ async function changeState(request: Request, env: Env, id: ActivityId, admin: Se
   if (!result.meta.changes) {
     await requireAdmin(request, env);
     sameRevision(await activity(env, id), revision);
-    fail(409, '현재 상태에서는 변경할 수 없습니다. 등록된 후보와 투표 방식을 확인해 주세요.', 'state_conflict');
+    fail(409, '현재 상태에서는 변경할 수 없습니다. 등록된 와인과 투표 방식을 확인해 주세요.', 'state_conflict');
   }
   return ok();
 }
@@ -674,10 +678,10 @@ async function addCandidate(request: Request, env: Env, admin: Session) {
     if (formRevision !== null && (typeof formRevision !== 'string' || !/^\d+$/.test(formRevision))) fail(400, '회차 정보를 확인해 주세요.');
     data = { name: form.get('name'), description: form.get('description') ?? '', requestId: form.get('requestId'), revision: formRevision === null ? 0 : Number(formRevision) };
   } else {
-    return fail(415, '후보 등록 요청의 형식을 확인해 주세요.');
+    return fail(415, '와인 등록 요청의 형식을 확인해 주세요.');
   }
-  const name = text(data.name, '후보 이름', 160), requestId = text(data.requestId, '요청 ID', 80);
-  const description = text(data.description ?? '', '후보 설명', 2000, false);
+  const name = text(data.name, '와인 이름', 160), requestId = text(data.requestId, '요청 ID', 80);
+  const description = text(data.description ?? '', '와인 설명', 2000, false);
   if (!/^[A-Za-z0-9_-]{8,80}$/.test(requestId)) fail(400, '요청 ID를 확인해 주세요.');
   const revision = revisionNumber(data.revision);
   const a = await activity(env, 'byob');
@@ -687,7 +691,7 @@ async function addCandidate(request: Request, env: Env, admin: Session) {
     .bind(requestId, revision, admin.token_hash, Date.now());
   const existing = await lookup().first<Candidate>();
   if (existing) return json({ candidate: candidatePublic(existing, env), reused: true });
-  if (a.started_at) fail(409, '투표 시작 후 후보를 변경할 수 없습니다.', 'candidates_locked');
+  if (a.started_at) fail(409, '투표 시작 후 와인을 변경할 수 없습니다.', 'candidates_locked');
   const id = crypto.randomUUID();
   let key = '', photoType = '';
   if (form) {
@@ -708,7 +712,7 @@ async function addCandidate(request: Request, env: Env, admin: Session) {
     if (!saved) {
       await requireAdmin(request, env);
       sameRevision(await activity(env, 'byob'), revision);
-      fail(409, '투표가 시작되어 후보를 추가할 수 없습니다.', 'candidates_locked');
+      fail(409, '투표가 시작되어 와인을 추가할 수 없습니다.', 'candidates_locked');
     }
     if (key && saved.id !== id) await env.PHOTOS.delete(key);
     return json({ candidate: candidatePublic(saved, env), reused: saved.id !== id });
@@ -733,31 +737,31 @@ async function addCandidate(request: Request, env: Env, admin: Session) {
 async function changeCandidate(request: Request, env: Env, id: string, admin: Session) {
   const data = await body(request), revision = requestRevision(data.revision);
   const original = await env.DB.prepare('SELECT name,description FROM candidates WHERE id=?').bind(id).first<Candidate>();
-  const name = original && data.name === original.name ? original.name : text(data.name, '후보 이름', 160);
-  const description = data.description === undefined ? null : original && data.description === original.description ? original.description! : text(data.description, '후보 설명', 2000, false);
+  const name = original && data.name === original.name ? original.name : text(data.name, '와인 이름', 160);
+  const description = data.description === undefined ? null : original && data.description === original.description ? original.description! : text(data.description, '와인 설명', 2000, false);
   const result = await env.DB.prepare(`UPDATE candidates SET name=?,description=coalesce(?,description) WHERE id=?
     AND EXISTS(SELECT 1 FROM activities WHERE id='byob' AND revision=? AND (started_at IS NULL OR status='closed')) AND ${activeAdmin(env)}`)
     .bind(name, description, id, revision, admin.token_hash, Date.now()).run();
   if (!result.meta.changes) {
     await requireAdmin(request, env);
     sameRevision(await activity(env, 'byob'), revision);
-    fail(409, '후보가 없거나 투표가 이미 시작되었습니다.', 'candidates_locked');
+    fail(409, '와인이 없거나 투표가 이미 시작되었습니다.', 'candidates_locked');
   }
   return ok();
 }
 async function renameCandidates(request: Request, env: Env, admin: Session) {
   const data = await body(request, 2 * 1024 * 1024);
   const revision = requestRevision(data.revision);
-  if (!Array.isArray(data.names) || !data.names.length) fail(400, '저장할 후보 이름을 확인해 주세요.');
+  if (!Array.isArray(data.names) || !data.names.length) fail(400, '저장할 와인 이름을 확인해 주세요.');
   const originals = new Map((await candidates(env)).map(candidate => [candidate.id,candidate]));
   const names = data.names.map((value: unknown) => {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) fail(400, '후보 정보를 확인해 주세요.');
+    if (!value || typeof value !== 'object' || Array.isArray(value)) fail(400, '와인 정보를 확인해 주세요.');
     const edit = value as Record<string, unknown>;
-    if (typeof edit.id !== 'string' || !edit.id.length || edit.id.length > 80 || edit.id.trim() !== edit.id) fail(400, '후보 ID를 확인해 주세요.');
+    if (typeof edit.id !== 'string' || !edit.id.length || edit.id.length > 80 || edit.id.trim() !== edit.id) fail(400, '와인 ID를 확인해 주세요.');
     const original = originals.get(edit.id);
-    return { id: edit.id, name: original && edit.name === original.name ? original.name : text(edit.name, '후보 이름', 160), ...(edit.description === undefined ? {} : {description:original && edit.description === original.description ? original.description : text(edit.description, '후보 설명', 2000, false)}) };
+    return { id: edit.id, name: original && edit.name === original.name ? original.name : text(edit.name, '와인 이름', 160), ...(edit.description === undefined ? {} : {description:original && edit.description === original.description ? original.description : text(edit.description, '와인 설명', 2000, false)}) };
   });
-  if (new Set(names.map(edit => edit.id)).size !== names.length) fail(400, '같은 후보가 두 번 포함되어 있습니다.');
+  if (new Set(names.map(edit => edit.id)).size !== names.length) fail(400, '같은 와인이 두 번 포함되어 있습니다.');
   const updated = await env.DB.prepare(`WITH edits AS MATERIALIZED (
       SELECT json_extract(value,'$.id') AS id,json_extract(value,'$.name') AS name,json_extract(value,'$.description') AS description FROM json_each(?)
     ) UPDATE candidates SET name=(SELECT edits.name FROM edits WHERE edits.id=candidates.id),
@@ -771,13 +775,13 @@ async function renameCandidates(request: Request, env: Env, admin: Session) {
     await requireAdmin(request, env);
     const current = await activity(env, 'byob');
     sameRevision(current, revision);
-    if (current.started_at && current.status !== 'closed') fail(409, '투표 마감 후 후보 정보를 수정해 주세요.', 'candidates_locked');
-    fail(409, '후보 목록이 변경되었습니다. 화면을 새로 고쳐 주세요.', 'candidate_list_changed');
+    if (current.started_at && current.status !== 'closed') fail(409, '투표 마감 후 와인 정보를 수정해 주세요.', 'candidates_locked');
+    fail(409, '와인 목록이 변경되었습니다. 화면을 새로 고쳐 주세요.', 'candidate_list_changed');
   }
   return ok();
 }
 async function reorderCandidates(request: Request, env: Env, admin: Session) {
-  const data = await body(request); if (!Array.isArray(data.ids) || data.ids.length > 200 || data.ids.some(id => typeof id !== 'string') || new Set(data.ids).size !== data.ids.length) fail(400, '후보 순서를 확인해 주세요.');
+  const data = await body(request); if (!Array.isArray(data.ids) || data.ids.length > 200 || data.ids.some(id => typeof id !== 'string') || new Set(data.ids).size !== data.ids.length) fail(400, '와인 순서를 확인해 주세요.');
   const list = data.ids as string[];
   const revision = requestRevision(data.revision);
   const encoded = JSON.stringify(list);
@@ -790,7 +794,7 @@ async function reorderCandidates(request: Request, env: Env, admin: Session) {
     await requireAdmin(request, env);
     const current = await activity(env, 'byob');
     sameRevision(current, revision);
-    if (list.length || current.started_at || (await candidates(env)).length) fail(409, '후보 목록이 변경되었거나 투표가 시작되었습니다.', 'candidates_locked');
+    if (list.length || current.started_at || (await candidates(env)).length) fail(409, '와인 목록이 변경되었거나 투표가 시작되었습니다.', 'candidates_locked');
   }
   return ok();
 }
@@ -808,7 +812,7 @@ async function deleteCandidate(request: Request, env: Env, id: string, admin: Se
   if (!removed) {
     await requireAdmin(request, env);
     sameRevision(await activity(env, 'byob'), revision);
-    fail(409, '후보가 없거나 투표가 이미 시작되었습니다.', 'candidates_locked');
+    fail(409, '와인이 없거나 투표가 이미 시작되었습니다.', 'candidates_locked');
   }
   if (removed.object_key) {
     const pending = await env.DB.prepare('SELECT object_key FROM candidate_photo_cleanup WHERE object_key=?').bind(removed.object_key).first();
@@ -833,7 +837,7 @@ async function retryCandidatePhotoCleanup(env: Env) {
 }
 async function resetCandidates(request: Request, env: Env, admin: Session) {
   const data = await body(request);
-  if (data.confirm !== 'reset-wines') fail(400, '후보 초기화를 확인해 주세요.');
+  if (data.confirm !== 'reset-wines') fail(400, '와인 초기화를 확인해 주세요.');
   const revision = revisionNumber(data.revision);
   const guard = `${activeAdmin(env)}
     AND EXISTS(SELECT 1 FROM activities WHERE id='byob' AND revision=? AND started_at IS NULL AND status='waiting' AND published=0)
@@ -847,7 +851,7 @@ async function resetCandidates(request: Request, env: Env, admin: Session) {
   if (!next) {
     await requireAdmin(request, env);
     sameRevision(await activity(env, 'byob'), revision);
-    fail(409, '투표 시작 후 후보를 변경할 수 없습니다.', 'candidates_locked');
+    fail(409, '투표 시작 후 와인을 변경할 수 없습니다.', 'candidates_locked');
   }
   return json({ ok: true, deleted: removed.results.length, revision: next.revision, cleanupPending: await retryCandidatePhotoCleanup(env) });
 }
@@ -873,9 +877,9 @@ async function participantLogin(request: Request, env: Env) {
   const key = nameKey(name);
   const token = randomToken(), hash = await digest(token), seconds = 30 * 24 * 3600, now = Date.now();
   await env.DB.batch([
-    env.DB.prepare('DELETE FROM sessions WHERE token_hash=? OR expires_at<=?').bind(await digest(readCookie(request, cookieName(env, 'participant'))), now),
-    env.DB.prepare('INSERT INTO participants(id,name,name_key) VALUES(?,?,?) ON CONFLICT(name_key) DO NOTHING').bind(crypto.randomUUID(), name, key),
-    env.DB.prepare("INSERT INTO sessions(token_hash,role,participant_id,expires_at,credential_version) SELECT ?,'participant',id,?,NULL FROM participants WHERE name_key=?").bind(hash, now + seconds * 1000, key)
+    env.DB.prepare(`DELETE FROM sessions WHERE (token_hash=? OR expires_at<=?) AND ${activePoll(env)}`).bind(await digest(readCookie(request, cookieName(env, 'participant'))), now),
+    env.DB.prepare(`INSERT INTO participants(id,name,name_key) SELECT ?,?,? WHERE ${activePoll(env)} ON CONFLICT(name_key) DO NOTHING`).bind(crypto.randomUUID(), name, key),
+    env.DB.prepare(`INSERT INTO sessions(token_hash,role,participant_id,expires_at,credential_version) SELECT ?,'participant',id,?,NULL FROM participants WHERE name_key=? AND ${activePoll(env)}`).bind(hash, now + seconds * 1000, key)
   ]);
   const participant = await env.DB.prepare('SELECT p.id,p.name FROM participants p JOIN sessions s ON s.participant_id=p.id WHERE s.token_hash=?').bind(hash).first<Participant>();
   if (!participant) fail(409, '참여 상태가 바뀌었습니다. 이름을 다시 입력해 주세요.', 'participant_changed');
@@ -979,21 +983,27 @@ async function memberRoute(request: Request, env: Env, ctx?: ExecutionContext): 
     if (member?.status !== 'approved') fail(401, '승인된 회원 로그인이 필요합니다.', 'unauthorized');
     if (workspace && (workspace.memberId ? member.id !== workspace.memberId : member.namespace !== workspace.namespace || member.workspaceSlug !== workspace.slug)) fail(403, '다른 회원의 투표를 관리할 수 없습니다.', 'workspace_forbidden');
     if (!['GET', 'HEAD'].includes(request.method) && request.headers.get('x-member-csrf') !== member.csrfToken) fail(403, '회원 계정이 변경되었습니다. 화면을 새로 고쳐 주세요.', 'csrf');
-    workspace ??= { slug: member.workspaceSlug, namespace: member.namespace, memberId: member.id };
+    workspace ??= await getWorkspaceBySlug(env,member.workspaceSlug) ?? fail(404,'투표 주소가 없습니다.','not_found');
     if (api === '/api/admin/password' || api === '/api/admin/session') {
       return await handleMemberRequest(withPath(request, api.replace('/api/admin/', '/api/members/')), env, ctx)
         ?? fail(404, '요청한 경로가 없습니다.', 'not_found');
     }
   }
+  if(!workspace && api.startsWith('/api/'))workspace=await getWorkspaceBySlug(env,'owner') ?? fail(404,'투표 주소가 없습니다.','not_found');
   if (workspace) {
     await ensureWorkspace(env, workspace);
-    return route(apiRequest, { ...workspaceEnv(env, workspace), MEMBER_DB: env.DB, ...(member ? { MEMBER_SESSION: member } : {}) });
+    let response:Response;
+    try{response=await route(apiRequest, { ...workspaceEnv(env, workspace), MEMBER_DB: env.DB, ...(member ? { MEMBER_SESSION: member } : {}) });}
+    catch(error){if(await workspaceDeleted(env,workspace))fail(404,'투표 주소가 없습니다.','not_found');throw error;}
+    if(await workspaceDeleted(env,workspace)){await response.body?.cancel();fail(404,'투표 주소가 없습니다.','not_found');}
+    return response;
   }
   return route(request, env);
 }
 function errorResponse(error: unknown) {
   if (error instanceof ApiError) return json({ error: error.message, code: error.code }, error.status);
   const message = error instanceof Error ? error.message : '';
+  if(/poll_deleted/.test(message))return json({error:'투표 주소가 없습니다.',code:'not_found'},404);
   const conflict = /UNIQUE constraint|candidates_locked|activity_closed|candidate_missing|credential_changed/.test(message);
   return json({ error: conflict ? '현재 상태와 충돌합니다. 화면을 새로 고쳐 주세요.' : '요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.', code: conflict ? 'conflict' : 'server_error' }, conflict ? 409 : 500);
 }
@@ -1018,6 +1028,6 @@ export default {
     return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
   },
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
-    if (env.SUPERADMIN_EMAIL) ctx.waitUntil(retryPendingNotices(env));
+    if (env.SUPERADMIN_EMAIL) {ctx.waitUntil(retryPendingNotices(env));ctx.waitUntil(retryDeletedPollPhotos(env));}
   }
 };

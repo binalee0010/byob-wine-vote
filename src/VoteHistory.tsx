@@ -76,12 +76,12 @@ export function VoteHistoryDetail({ record, onBack, onSaved, onDeleted }: {
     finally { submitting.current = false; setBusy(false); }
   };
   return <section className="panel vote-history">
-    <button type="button" className="back" disabled={busy} onClick={onBack}>← 지난 투표 목록</button>
+    <button type="button" className="back" disabled={busy} onClick={onBack}>← 저장된 기록 목록</button>
     <h2 ref={heading} tabIndex={-1}>{record.title}</h2>
     <p>{record.activityTitle}</p>
     <p className="muted">시작 {formatDate.format(new Date(record.startedAt))} · 저장 {formatDate.format(new Date(record.savedAt))}</p>
     <p className="muted">{votingMethodInfo[record.votingMethod].label} · 총투표 {record.ballotCount}건</p>
-    {record.votingMethod === 'winner' && <p className="muted">후보 하나에 1표</p>}
+    {record.votingMethod === 'winner' && <p className="muted">와인 하나에 1표</p>}
     {record.votingMethod === 'full' && <p className="muted">1위 {record.rows.length}점부터 마지막 순위 1점까지</p>}
     {record.votingMethod === 'custom' && <p className="muted">{record.rankPoints.map((points, place) => `${place + 1}위 ${points.toLocaleString('ko-KR')}점`).join(' · ')}</p>}
     <Notice error>{error}</Notice><Notice>{feedback}</Notice>
@@ -96,7 +96,7 @@ export function VoteHistoryDetail({ record, onBack, onSaved, onDeleted }: {
     </div>
     {editing && <form className="history-edit-form" onSubmit={event => void save(event)}>
       <label>투표 제목<input ref={titleInput} value={title} maxLength={160} required disabled={busy} onChange={event => setTitle(event.target.value)} /></label>
-      <div className="field-grid">{names.map((wine, index) => <div key={wine.id}><label>후보 {record.rows[index].number} 이름
+      <div className="field-grid">{names.map((wine, index) => <div key={wine.id}><label>와인 {record.rows[index].number} 이름
         <input value={wine.name} maxLength={160} required disabled={busy} onChange={event => setNames(current => current.map(row => row.id === wine.id ? { ...row, name: event.target.value } : row))} />
       </label><label>설명 (선택)<textarea value={wine.description} maxLength={2000} rows={3} disabled={busy} onChange={event => setNames(current => current.map(row => row.id === wine.id ? { ...row, description: event.target.value } : row))}/></label></div>)}</div>
       <div className="row"><button type="submit" className="primary" disabled={busy || !dirty || !title.trim() || names.some(wine => !wine.name.trim())}>{busy ? '저장 중…' : '변경사항 저장'}</button>
@@ -117,7 +117,7 @@ export default function VoteHistory() {
   const previousId = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!selected) (document.getElementById(`history-entry-${previousId.current}`) ?? heading.current)?.focus();
+    if (!selected && previousId.current) (document.getElementById(`history-entry-${previousId.current}`) ?? heading.current ?? document.getElementById('vote-results-heading'))?.focus();
   }, [selected]);
 
   useEffect(() => {
@@ -149,13 +149,13 @@ export default function VoteHistory() {
     setRecords(current => current?.filter(row => row.id !== id) ?? null);
     back();
   }
+  if (!selected && !error && (!records || records.length === 0)) return null;
   if (record) return <VoteHistoryDetail key={record.id} record={record} onBack={back} onSaved={saved} onDeleted={deleted} />;
   return <section className="panel vote-history">
-    {selected && <button type="button" className="back" onClick={back}>← 지난 투표 목록</button>}
-    <h2 ref={heading} tabIndex={-1}>{selected?.title ?? '지난 투표'}</h2>
+    {selected && <button type="button" className="back" onClick={back}>← 저장된 기록 목록</button>}
+    <h2 ref={heading} tabIndex={-1}>{selected?.title ?? '저장된 기록'}</h2>
     {error ? <><Notice error>{error}</Notice><button type="button" onClick={() => { setError(''); setAttempt(value => value + 1); }}>다시 불러오기</button></>
       : selected || !records ? <p role="status">투표 기록을 불러오고 있습니다…</p>
-      : records.length === 0 ? <p className="muted">저장된 투표 기록이 없습니다.</p>
       : <ul className="ranked-result-list" role="list">{records.map(row => <li key={row.id}>
         <button id={`history-entry-${row.id}`} type="button" className="history-entry" onClick={() => { previousId.current = row.id; setError(''); setSelected(row); }}>
           <strong>{row.title}</strong>
