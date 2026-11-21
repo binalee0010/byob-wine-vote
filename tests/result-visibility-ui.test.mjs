@@ -37,7 +37,7 @@ test('three result scopes save before or after closing and show the requested la
   const env = environment(); const state = { event: { title: '모임', memo: '' }, activities: [activity('private')], participants: [], submittedCount: 0, candidates: [] };
   const app = mount(() => Progress({ state, action: async () => true, busy: false })); let control;
   try {
-    control = mount(() => named(app.render(), 'ActivityControl').type(named(app.render(), 'ActivityControl').props));
+    control = mount(() => { const settings = named(app.render(), 'ActivitySettings'); return settings.type(settings.props); });
     const select = nodes(control.render()).find(node => node.type === 'select');
     assert.deepEqual(nodes(select).filter(node => node.type === 'option').map(node => [node.props.value, node.props.children]), [['private', '호스트만 보기'], ['participants', '참가자만 보기'], ['public', '전체 공개']]);
     for (const status of ['waiting', 'open', 'closed']) for (const scope of ['private', 'participants', 'public']) {
@@ -46,6 +46,81 @@ test('three result scopes save before or after closing and show the requested la
       assert.equal(update.patch.activities?.[0]?.resultVisibility ?? 'private', scope);
     }
   } finally { await settle(); control?.close(); app.close(); env.restore(); }
+});
+
+test('one nearby settings form preserves save retries and start-close guards with a long participant list', async () => {
+  const env = environment(); const requests = []; let fail = true;
+  let state = { event: { title: '모임', memo: '기존 메모' }, activities: [{ ...activity('private', 'waiting'), started: false, resultsLocked: false, votingMethod: 'full' }], participants: Array.from({ length: 200 }, (_, i) => ({ id: 'person-' + i, name: '참가자 ' + i })), submittedCount: 12, candidates: [], rosterRevision: 1 };
+  const action = async (path, method, body, feedback) => {
+    requests.push([path, method, JSON.parse(JSON.stringify(body))]);
+    if (path === '/admin/settings') {
+      if (fail) { feedback.error('설정 저장 실패'); return false; }
+      state = { ...state, event: { ...state.event, ...body.event }, activities: state.activities.map(row => ({ ...row, ...body.activities?.find(update => update.id === row.id) })) };
+    } else state = { ...state, activities: state.activities.map(row => ({ ...row, started: true, status: body.action === 'open' ? 'open' : 'closed' })) };
+    return true;
+  };
+  const app = mount(() => Progress({ state, action, busy: false })); let controlNode; let control;
+  const button = (tree, label) => nodes(tree).find(node => node.type === 'button' && node.props.children === label);
+  const form = tree => nodes(tree).find(node => node.type === 'form' && node.props.id === 'progress-settings');
+  const settings = tree => { const node = named(tree, 'ActivitySettings'); return node.type(node.props); };
+  const change = (input, value) => input.props.onChange({ target: { value } });
+  const render = () => { const tree = app.render(); controlNode = named(tree, 'ActivityControl'); return tree; };
+  try {
+    let tree = render(); const initialForm = form(tree);
+    assert.equal(nodes(tree).filter(node => node.type === 'form').length, 1);
+    assert.equal(nodes(initialForm).filter(node => node.type === 'button' && node.props.children === '설정 모두 저장').length, 1);
+    assert.ok(named(initialForm, 'ActivitySettings')); assert.equal(named(initialForm, 'Participants'), undefined); assert.equal(named(initialForm, 'ActivityControl'), undefined);
+    assert.ok(nodes(tree).indexOf(initialForm) < nodes(tree).indexOf(named(tree, 'Participants')));
+    assert.equal(controlNode.props.count, 12); assert.equal(controlNode.props.total, 200);
+    assert.equal(button(initialForm, '설정 모두 저장').props.disabled, true);
+    const eventInputs = nodes(initialForm).filter(node => node.type === 'input' || node.type === 'textarea');
+    assert.deepEqual(eventInputs.map(node => node.props.value), ['모임', '기존 메모']);
+    change(eventInputs[0], '새 모임'); change(eventInputs[1], '첫 줄\n둘째 줄');
+    let activitySettings = settings(tree);
+    change(nodes(activitySettings).find(node => node.type === 'input'), '새 질문');
+    const method = named(activitySettings, 'VotingMethodSetting');
+    change(nodes(method.type(method.props)).find(node => node.type === 'select'), 'winner');
+    change(nodes(activitySettings).find(node => node.type === 'select'), 'participants');
+    tree = render(); control = mount(() => controlNode.type(controlNode.props));
+    assert.equal(button(control.render(), '시작').props.disabled, true);
+    assert.ok([...nodes(form(tree)), ...nodes(settings(tree))].filter(node => ['input', 'textarea', 'select'].includes(node.type)).every(node => node.props.form === 'progress-settings'));
+    await form(tree).props.onSubmit({ preventDefault() {} }); tree = render();
+    assert.ok(JSON.stringify(form(tree)).includes('설정 저장 실패'));
+    assert.deepEqual(nodes(form(tree)).filter(node => node.type === 'input' || node.type === 'textarea').map(node => node.props.value), ['새 모임', '첫 줄\n둘째 줄']);
+    fail = false; await form(tree).props.onSubmit({ preventDefault() {} }); tree = render();
+    assert.deepEqual(requests[0], ['/admin/settings', 'PATCH', { event: { title: '새 모임', memo: '첫 줄\n둘째 줄' }, activities: [{ id: 'byob', revision: 2, title: '새 질문', votingMethod: 'winner', resultVisibility: 'participants' }] }]);
+    assert.deepEqual(requests[1], requests[0]); assert.equal(button(form(tree), '설정 모두 저장').props.disabled, true);
+    let controls = control.render(); assert.equal(button(controls, '시작').props.disabled, false);
+    assert.equal(nodes(controls).some(node => ['input', 'textarea', 'select'].includes(node.type)), false);
+    button(controls, '시작').props.onClick(); await button(control.render(), '확인').props.onClick(); tree = render();
+    assert.deepEqual(requests[2], ['/admin/activities/byob/state', 'POST', { action: 'open', revision: 2 }]);
+    activitySettings = settings(tree); change(nodes(activitySettings).find(node => node.type === 'select'), 'public'); tree = render();
+    assert.equal(button(control.render(), '마감').props.disabled, true);
+    await form(tree).props.onSubmit({ preventDefault() {} }); tree = render(); controls = control.render();
+    assert.equal(button(controls, '마감').props.disabled, false); button(controls, '마감').props.onClick();
+    await button(control.render(), '확인').props.onClick();
+    assert.deepEqual(requests.at(-1), ['/admin/activities/byob/state', 'POST', { action: 'close', revision: 2 }]);
+  } finally { await settle(); control?.close(); app.close(); env.restore(); }
+});
+
+test('cancelling start or close restores its trigger focus or the progress heading when disabled', async () => {
+  const env = environment(); let focused; let control;
+  const button = (tree, label) => nodes(tree).find(node => node.type === 'button' && node.props.children === label);
+  globalThis.document.getElementById = id => { assert.equal(id, 'activity-progress-heading'); return { focus() { focused = 'heading'; } }; };
+  try {
+    for (const [status, label] of [['waiting', '시작'], ['open', '마감']]) for (const disabled of [false, true]) {
+      const state = { event: { title: '모임' }, activities: [{ ...activity('private', status), started: status === 'open', resultsLocked: false }], participants: [], submittedCount: 0, candidates: [] };
+      const app = mount(() => Progress({ state, action: async () => assert.fail('cancel must not send a request'), busy: false }));
+      try {
+        const node = named(app.render(), 'ActivityControl'); control = mount(() => node.type(node.props));
+        const trigger = button(control.render(), label); focused = undefined;
+        const target = { isConnected: true, disabled: false, focus() { focused = label; } }; trigger.props.ref.current = target;
+        trigger.props.onClick(); let tree = control.render(); assert.ok(button(tree, '취소'));
+        target.disabled = disabled; button(tree, '취소').props.onClick(); tree = control.render();
+        assert.equal(button(tree, '취소'), undefined); assert.equal(focused, disabled ? 'heading' : label);
+      } finally { control?.close(); control = undefined; app.close(); }
+    }
+  } finally { await settle(); control?.close(); env.restore(); }
 });
 
 test('participant-only guests receive the existing-name login form and cannot load results', async () => {

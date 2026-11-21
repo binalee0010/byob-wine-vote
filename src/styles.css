@@ -137,3 +137,56 @@ body{padding-left:env(safe-area-inset-left,0px);padding-right:env(safe-area-inse
 .submission-status-list{list-style:none;margin:0;padding:0;display:grid;gap:12px}.submission-status-list li{display:flex;align-items:center;justify-content:space-between;gap:16px;border-top:1px solid var(--line);padding-top:12px}.submission-status-list strong{min-width:0;overflow-wrap:anywhere}.submission-status-list span{flex-shrink:0;font-size:14px}
 .member-poll-list li > a{flex:1}
 .candidate-photo-upload{padding:16px 18px 0;min-width:0}.candidate-photo-upload input{display:block;width:100%;min-width:0;min-height:44px;margin-top:8px;font-size:14px}.candidate-photo-upload .upload-status{margin-top:10px}
+.progress-layout {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+}
+.progress-controls { min-width: 0; }
+.progress-layout > .share-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 148px;
+  gap: 16px;
+  align-items: center;
+}
+.progress-layout > .share-panel .qr {
+  width: 148px;
+  height: 148px;
+  max-width: none;
+}
+.progress-settings > h2 { margin-bottom: 0; }
+.progress-settings > .primary { justify-self: start; }
+.progress-settings .progress-fields { min-width: 0; }
+.progress-layout .activity-control h2 { overflow-wrap: anywhere; }
+.progress-layout .count {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+.progress-layout #submission-status-heading { scroll-margin-top: 96px; }
+.progress-danger-zone {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  gap: 16px;
+  border-top: 1px solid var(--line);
+  padding-top: 22px;
+}
+.progress-danger-zone > .destructive-panel { margin: 0; }
+.progress-danger-zone h2 { font-size: 18px; }
+.progress-danger-zone > .panel { padding: 20px; }
+@media (min-width: 901px) {
+  .progress-layout > .progress-controls,
+  .progress-layout > .share-panel { align-self: stretch; }
+  .progress-controls > .activity-control { height: 100%; }
+}
+@media (max-width: 900px) {
+  .progress-layout { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 650px) {
+  .progress-settings > .primary { width: 100%; }
+}
+@media (max-width: 420px) {
+  .progress-layout > .share-panel { grid-template-columns: minmax(0, 1fr); }
+  .progress-layout > .share-panel .qr { justify-self: center; }
+}

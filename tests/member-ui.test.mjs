@@ -597,7 +597,7 @@ test('submission status is read-only and aggregate controls use server counts wi
   Object.defineProperty(state, 'answers', { get() { assert.fail('individual answers must never be read'); } });
   try {
     const tree = uploadApi.Participants({ state }); const text = JSON.stringify(tree);
-    assert.ok(text.includes('제출 현황')); assert.ok(text.includes('참여자 2명 중 1명 제출 완료')); assert.ok(text.includes('참여한 민수')); assert.ok(text.includes('참여한 서연'));
+    assert.ok(text.includes('제출 현황')); assert.ok(text.includes('참여한 민수')); assert.ok(text.includes('참여한 서연'));
     assert.ok(text.includes(submissionStatusText(true))); assert.ok(text.includes(submissionStatusText(false)));
     assert.equal(nodes(tree).filter(node => ['form', 'input', 'textarea', 'button', 'select'].includes(node.type)).length, 0);
     assert.equal(named(tree, 'DestructiveAction'), undefined);
@@ -607,7 +607,7 @@ test('submission status is read-only and aggregate controls use server counts wi
       const progressTree = progress.render(); const activity = named(progressTree, 'ActivityControl');
       assert.equal(activity.props.count, 1); assert.equal(activity.props.total, 2);
       assert.ok(!JSON.stringify(progressTree).includes('참가 방식'));
-      const reset = named(progressTree, 'DestructiveAction'); assert.ok(reset.props.request.description.includes('이 투표의 참가 기록과 세션'));
+      const reset = nodes(progressTree).find(node => node.type?.name === 'DestructiveAction' && node.props.label === '전체 초기화'); assert.ok(reset.props.request.description.includes('이 투표의 참가 기록과 세션'));
       assert.equal(reset.props.request.body.expectedRosterRevision, 7);
       assert.ok(!JSON.stringify(progressTree).includes('이전에 저장된 기록'));
     } finally { await settle(); progress.close(); }

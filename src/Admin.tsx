@@ -208,7 +208,7 @@ export function Progress({ state, action, busy, changePassword, onResetAll, poll
         }
     }
     const participantUrl = state.participantUrl ?? new URL('/', location.origin).href;
-    useEffect(() => { QRCode.toDataURL(participantUrl, { width: 256, margin: 2, color: { dark: '#682339', light: '#ffffff' } }).then(setQr).catch(() => setCopied('QR 코드를 만들지 못했습니다. 주소를 복사해 주세요.')); }, [participantUrl]);
+    useEffect(() => { QRCode.toDataURL(participantUrl, { width: 256, margin: 4, color: { dark: '#682339', light: '#ffffff' } }).then(setQr).catch(() => setCopied('QR 코드를 만들지 못했습니다. 주소를 복사해 주세요.')); }, [participantUrl]);
     async function copy() { try {
         await navigator.clipboard.writeText(participantUrl);
         setCopied('참가자 주소를 복사했습니다.');
@@ -226,33 +226,38 @@ export function Progress({ state, action, busy, changePassword, onResetAll, poll
         onResetAll?.();
         return true;
     };
-    return <div className="admin-grid">
-    <section className="panel">
-      <h2>투표 정보</h2>
-      <div className="progress-fields">
-        <label>투표 제목<input {...field('event:title')} maxLength={120} required disabled={busy}/></label>
-        <label>메모<textarea {...field('event:memo')} maxLength={2000} rows={4} disabled={busy}/></label>
-      </div>
-    </section>
+    return <div className="admin-grid progress-layout">
+    <div className="progress-controls">{state.activities.map(activity => <ActivityControl key={activity.id + ':' + activity.revision} activity={activity} count={state.submittedCount} total={state.participants.length} action={action} busy={busy} field={field} startBlocked={dirty}/>)}</div>
     <section className="panel share-panel">
       <div><h2>투표 링크</h2>
         <a className="share-url" href={participantUrl} target="_blank" rel="noreferrer">{participantUrl}</a>
         <button className="secondary" type="button" onClick={copy}>주소 복사</button><Notice>{copied}</Notice>
       </div>{qr && <img className="qr" src={qr} alt="참가자 입장 주소 QR 코드"/>}
     </section>
-    <section className="full-width">
-      <div className="section-heading"><h2 id="activity-progress-heading" tabIndex={-1}>진행 상태</h2>
-        {dirty ? <span>설정을 모두 저장한 뒤 시작할 수 있습니다.</span> : false}
+    <form id="progress-settings" className="panel progress-settings" onSubmit={saveSettings}>
+      <h2>투표 정보</h2>
+      <div className="progress-fields">
+        <label>투표 제목<input {...field('event:title')} maxLength={120} required disabled={busy}/></label>
+        <label>메모<textarea {...field('event:memo')} maxLength={2000} rows={4} disabled={busy}/></label>
+        {state.activities.map(activity => <ActivitySettings key={activity.id + ':' + activity.revision} activity={activity} busy={busy} field={field}/>)}
       </div>
-      <div className="ranked-activity">{state.activities.map(activity => <ActivityControl key={activity.id + ':' + activity.revision} activity={activity} count={state.submittedCount} total={state.participants.length} action={action} busy={busy} field={field} startBlocked={dirty}/>)}</div>
-    </section>
-    <div className="full-width"><Participants state={state}/></div>
-    <form id="progress-settings" className="full-width settings-save" onSubmit={saveSettings}>
       <Notice error>{saveError}</Notice>
       <button className="primary" disabled={busy || !dirty}>설정 모두 저장</button>
     </form>
+    <Participants state={state}/>
     {changePassword && <PasswordChange busy={busy} onChangePassword={changePassword}/>}
-    {<section className="panel full-width destructive-panel">
+    <div className="full-width progress-danger-zone">
+    <section className="panel destructive-panel">
+      <h2>투표 리셋</h2>
+      <p className="muted">응답과 결과를 지우고 투표를 대기로 되돌립니다. 참여 정보와 와인은 유지됩니다.</p>
+      {state.activities.map(activity => <DestructiveAction key={activity.id} label="투표 리셋" accessibleLabel={activity.title + ' 리셋'} action={action} busy={busy} focusFallback="activity-progress-heading" request={{
+        title: activity.title + ' 리셋',
+        description: `투표 ${responseCount}건을 삭제합니다. 대기 상태로 돌아가며 결과 공개 설정은 ‘호스트만 보기’로 바뀌고 잠금이 풀립니다. 참여 정보, 와인과 사진, 투표 정보는 유지됩니다.`,
+        path: '/admin/activities/' + activity.id + '/reset', method: 'POST',
+        body: { confirm: 'reset', expectedRevision: activity.revision }, success: activity.title + ' 투표를 대기로 돌리고 응답과 결과를 지웠습니다.',
+      }}/>)}
+    </section>
+    {<section className="panel destructive-panel">
       <h2>현재 투표 전체 초기화</h2>
       <p className="muted">현재 참가자, 와인과 응답을 삭제하고 투표를 대기로 되돌립니다. 현재 결과는 삭제됩니다.</p>
       <DestructiveAction label="전체 초기화" action={resetAll} busy={busy} request={{
@@ -264,7 +269,7 @@ export function Progress({ state, action, busy, changePassword, onResetAll, poll
                     : '현재 투표를 초기화했습니다.',
             }}/>
     </section>}
-    {pollSlug && removePoll && <section className="panel full-width destructive-panel">
+    {pollSlug && removePoll && <section className="panel destructive-panel">
       <h2>투표 삭제</h2>
       <p className="muted">삭제하면 이 투표의 참가 링크가 닫히고 응답과 결과를 다시 볼 수 없습니다.</p>
       <DestructiveAction label="투표 삭제" accessibleLabel={state.event.title + ' 투표 삭제'} action={removePoll} busy={busy} request={{
@@ -272,7 +277,7 @@ export function Progress({ state, action, busy, changePassword, onResetAll, poll
         description: '삭제하면 이 투표의 참가 링크가 닫히고 응답과 결과를 다시 볼 수 없습니다.',
         path: '/members/polls/' + encodeURIComponent(pollSlug), method: 'DELETE', body: { confirm: 'delete-poll' }, success: '투표를 삭제했습니다.',
       }}/>
-    </section>}</div>;
+    </section>}</div></div>;
 }
 export function PasswordChange({ busy, onChangePassword }: {
     busy: boolean;
@@ -333,27 +338,12 @@ export function VotingMethodSetting({ activity, busy, field }: {
     {activity.started && <small>투표를 시작했습니다. 투표 리셋 후 방식을 바꿀 수 있습니다.</small>}
   </>;
 }
-function ActivityControl({ activity, count, total, action, busy, field, startBlocked }: {
-    activity: AdminActivity;
-    count: number;
-    total: number;
-    action: Action;
-    busy: boolean;
-    field: SettingField;
-    startBlocked: boolean;
-}) {
-    const [confirm, setConfirm] = useState<'open' | 'close' | null>(null);
+export function ActivitySettings({ activity, busy, field }: { activity: AdminActivity; busy: boolean; field: SettingField }) {
     const visibility = field(progressFieldKey(activity, 'resultVisibility'));
-    const visibilityHelp = `${activity.id}-result-visibility-help`;
+    const visibilityHelp = activity.id + '-result-visibility-help';
     const visibilityChanged = visibility.value !== activity.resultVisibility;
-    const willPublishOnClose = activity.resultVisibility !== 'private';
     const resultsLocked = activity.resultsLocked || activity.published;
-    const startDisabled = busy || startBlocked || resultsLocked || activity.status === 'open';
-    const closeDisabled = busy || activity.status !== 'open' || visibilityChanged;
-    const confirmDisabled = confirm === 'open' ? startDisabled : closeDisabled;
-    return <article className="panel activity-control">
-    <div className="row spread"><p className="eyebrow">투표</p><Status activity={activity}/></div>
-    <div className="progress-fields">
+    return <><div className="progress-fields">
       <label>투표 질문<input {...field(progressFieldKey(activity, 'title'))} maxLength={120} required disabled={busy}/></label>
       <VotingMethodSetting activity={activity} busy={busy} field={field}/>
       {<div>
@@ -376,17 +366,46 @@ function ActivityControl({ activity, count, total, action, busy, field, startBlo
           {resultsLocked ? ' 결과가 잠긴 투표는 다시 시작할 수 없습니다.' : visibility.value !== 'private' && ' 결과를 공개한 뒤에는 다시 시작할 수 없습니다.'}
         </small>
       </div>}
-    </div>
-    <p className="count"><strong>{count}</strong> / {total}<span>명 제출</span></p>
+    </div></>;
+}
+function ActivityControl({ activity, count, total, action, busy, field, startBlocked }: {
+    activity: AdminActivity;
+    count: number;
+    total: number;
+    action: Action;
+    busy: boolean;
+    field: SettingField;
+    startBlocked: boolean;
+}) {
+    const [confirm, setConfirm] = useState<'open' | 'close' | null>(null);
+    const startButton = useRef<HTMLButtonElement>(null);
+    const closeButton = useRef<HTMLButtonElement>(null);
+    function cancelConfirmation() {
+        const trigger = confirm === 'open' ? startButton.current : closeButton.current;
+        setConfirm(null);
+        if (trigger?.isConnected && !trigger.disabled) trigger.focus();
+        else document.getElementById('activity-progress-heading')?.focus();
+    }
+    const visibility = field(progressFieldKey(activity, 'resultVisibility'));
+    const visibilityChanged = visibility.value !== activity.resultVisibility;
+    const willPublishOnClose = activity.resultVisibility !== 'private';
+    const resultsLocked = activity.resultsLocked || activity.published;
+    const startDisabled = busy || startBlocked || resultsLocked || activity.status === 'open';
+    const closeDisabled = busy || activity.status !== 'open' || visibilityChanged;
+    const confirmDisabled = confirm === 'open' ? startDisabled : closeDisabled;
+    return <article className="panel activity-control">
+    <div className="row spread"><h2 id="activity-progress-heading" tabIndex={-1}>진행 상태</h2><Status activity={activity}/></div>
+    {startBlocked && <p className="muted">설정을 모두 저장한 뒤 시작할 수 있습니다.</p>}
+    <a className="count" href="#submission-status-heading" aria-label={`제출 현황 보기: ${total}명 중 ${count}명 제출`}><strong>{count}</strong> / {total}<span>명 제출</span></a>
     <div className="control-actions">
-      <button type="button" className="primary" disabled={startDisabled} onClick={() => setConfirm('open')}>{activity.started ? '다시 시작' : '시작'}</button>
-      <button type="button" disabled={closeDisabled} onClick={() => setConfirm('close')}>마감</button>
+      <button ref={startButton} type="button" className={activity.status !== 'open' && !resultsLocked ? 'primary' : undefined} disabled={startDisabled} onClick={() => setConfirm('open')}>{activity.started ? '다시 시작' : '시작'}</button>
+      <button ref={closeButton} type="button" className={activity.status === 'open' ? 'primary' : undefined} disabled={closeDisabled} onClick={() => setConfirm('close')}>마감</button>
     </div>
     {confirm && <div className="confirm-box">
       <p>{confirm === 'close' ? <>
         지금 참여를 마감할까요?
         {willPublishOnClose && (activity.resultVisibility === 'participants' ? ' 마감하면 참여했던 이름으로 로그인한 참가자만 결과를 볼 수 있습니다. 공개 후에는 다시 시작할 수 없습니다.' : ' 마감하면 링크가 있는 누구나 결과를 볼 수 있습니다. 공개 후에는 다시 시작할 수 없습니다.')}
-      </> : `${votingMethodInfo[activity.votingMethod ?? 'full'].label} 방식으로 투표를 열까요? 시작 후 방식과 와인은 변경할 수 없습니다.`}</p>
+      </> : `${votingMethodInfo[activity.votingMethod ?? 'full'].label} 방식으로 투표를 열까요? 시작하면 투표 방식과 후보 목록이 확정됩니다.`}</p>
       <div className="row">
         <button type="button" className="primary" disabled={confirmDisabled} onClick={async () => {
                 if (confirmDisabled)
@@ -394,23 +413,14 @@ function ActivityControl({ activity, count, total, action, busy, field, startBlo
                 if (await action('/admin/activities/' + activity.id + '/state', 'POST', { action: confirm, revision: activity.revision }))
                     setConfirm(null);
             }}>확인</button>
-        <button type="button" disabled={busy} onClick={() => setConfirm(null)}>취소</button>
+        <button type="button" disabled={busy} onClick={cancelConfirmation}>취소</button>
       </div>
     </div>}
-    <div className="activity-reset">
-      <DestructiveAction label="투표 리셋" accessibleLabel={activity.title + ' 리셋'} action={action} busy={busy} focusFallback="activity-progress-heading" request={{
-            title: activity.title + ' 리셋',
-            description: `투표 ${count}건을 삭제합니다. 대기 상태로 돌아가며 결과 공개 설정은 ‘호스트만 보기’로 바뀌고 잠금이 풀립니다. 참여 정보, 와인과 사진, 투표 정보는 유지됩니다.`,
-            path: '/admin/activities/' + activity.id + '/reset', method: 'POST',
-            body: { confirm: 'reset', expectedRevision: activity.revision }, success: activity.title + ' 투표를 대기로 돌리고 응답과 결과를 지웠습니다.',
-        }}/>
-    </div>
   </article>;
 }
 export function Participants({ state }: { state: AdminState }) {
     return <section className="panel">
-      <h2>제출 현황</h2>
-      {state.participants.length > 0 && <p className="muted">{`참여자 ${state.participants.length}명 중 ${state.submittedCount}명 제출 완료`}</p>}
+      <h2 id="submission-status-heading" tabIndex={-1}>제출 현황</h2>
       {!state.participants.length ? <p className="muted">아직 참여한 사람이 없습니다.</p>
         : <ul className="submission-status-list" aria-label="참여자별 제출 현황">{state.participants.map(participant => <li key={participant.id}>
           <strong>{participant.name}</strong><span className={participant.submitted?.byob ? 'submitted-text' : 'muted'}>{submissionStatusText(!!participant.submitted?.byob)}</span>
