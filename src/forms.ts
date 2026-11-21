@@ -42,16 +42,12 @@ export function selectCustomRank(ranking: string[], candidateId: string, place: 
   return next;
 }
 
-export function candidateNameChanges(candidates: { id: string; name: string; description?: string }[], fields: FormData) {
+export function candidateNameChanges(candidates: { id: string; name: string }[], fields: FormData) {
   return candidates.flatMap(candidate => {
     const input = fields.get(candidate.id);
     if (typeof input !== 'string') return [];
     const name = input === candidate.name ? candidate.name : input.normalize('NFKC').trim();
-    const descriptionInput = fields.get('description:' + candidate.id);
-    const originalDescription = candidate.description ?? '';
-    const description = typeof descriptionInput === 'string' && descriptionInput !== originalDescription ? descriptionInput.trim() : originalDescription;
-    const changedDescription = description !== (candidate.description ?? '');
-    return name === candidate.name && !changedDescription ? [] : [{ id: candidate.id, name, ...(changedDescription ? { description } : {}) }];
+    return name === candidate.name ? [] : [{ id: candidate.id, name }];
   });
 }
 

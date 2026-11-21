@@ -549,23 +549,33 @@ test('password change accepts 1234 and preserves mismatch and nonempty validatio
   } finally { app.close(); restore(); }
 });
 
-test('candidate descriptions submit only changed metadata and remain editable after close', async () => {
+test('candidate registration edits names only and keeps existing descriptions out of the form payload', async () => {
   const fields = new FormData(); fields.set('a', '기존 후보'); fields.set('description:a', '수정 설명'); fields.set('b', '다른 후보'); fields.set('description:b', '');
-  const original = [{ id: 'a', number: 1, name: '기존 후보', description: '기존 설명', photoUrl: '/photo-a' }, { id: 'b', number: 2, name: '다른 후보', description: '지울 설명', photoUrl: null }];
-  assert.deepEqual(candidateNameChanges(original, fields), [{ id: 'a', name: '기존 후보', description: '수정 설명' }, { id: 'b', name: '다른 후보', description: '' }]);
-  fields.delete('description:a'); fields.delete('description:b'); assert.deepEqual(candidateNameChanges(original, fields), []);
+  const original = [{ id: 'a', number: 1, name: '기존 후보', description: '기존 설명', photoUrl: '/photo-a' }, { id: 'b', number: 2, name: '다른 후보', description: '보존할 설명', photoUrl: null }];
+  assert.deepEqual(candidateNameChanges(original, fields), []);
+  fields.set('a', ' 수정 후보 '); assert.deepEqual(candidateNameChanges(original, fields), [{ id: 'a', name: '수정 후보' }]);
   const legacyFields = new FormData(); legacyFields.set('legacy', 'Ａ 기존 이름 '); legacyFields.set('description:legacy', '새 설명');
-  assert.deepEqual(candidateNameChanges([{ id: 'legacy', name: 'Ａ 기존 이름 ', description: '예전 설명' }], legacyFields), [{ id: 'legacy', name: 'Ａ 기존 이름 ', description: '새 설명' }]);
-  const restore = environment();
+  assert.deepEqual(candidateNameChanges([{ id: 'legacy', name: 'Ａ 기존 이름 ', description: '예전 설명' }], legacyFields), []);
+  const restore = environment(); const NativeFormData = globalThis.FormData;
+  globalThis.FormData = class extends NativeFormData { constructor(form) { super(); for (const [key, value] of Object.entries(form)) this.set(key, value); } };
   try {
-    for (const status of ['open', 'closed']) {
-      const state = { activities: [{ id: 'byob', revision: 1, started: true, status }], candidates: original, photoCleanupPending: 0 };
-      const app = mount(() => uploadApi.Candidates({ state, action: async () => true, busy: false, refresh: async () => {}, onUploadBusy() {} }));
+    for (const status of ['waiting', 'open', 'closed']) {
+      const state = { event: { title: '모임', memo: '보존할 모임 메모' }, participants: [{ id: 'person', name: '참가자' }], activities: [{ id: 'byob', revision: 1, started: status !== 'waiting', status }], candidates: original, photoCleanupPending: 0 };
+      const before = structuredClone(state); const requests = [];
+      const app = mount(() => uploadApi.Candidates({ state, action: async (path, method, body) => { requests.push({ path, method, body }); return true; }, busy: false, refresh: async () => {}, onUploadBusy() {} }));
       try {
         const tree = app.render();
-        assert.equal(named(tree, 'ServerTextInput').props.disabled, status === 'open'); assert.equal(named(tree, 'ServerTextArea').props.disabled, status === 'open');
-        assert.equal(!!button(tree, '와인 정보 저장'), status === 'closed'); assert.equal(button(tree, '삭제'), undefined);
-        assert.equal(nodes(tree).filter(node => node.type === 'input' && node.props.type === 'file').length, 0);
+        assert.equal(named(tree, 'ServerTextInput').props.disabled, status === 'open'); assert.equal(named(tree, 'ServerTextArea'), undefined);
+        assert.ok(!JSON.stringify(tree).includes('설명 (선택)')); assert.equal(named(tree, 'CandidatePhotoEditor').props.candidate, original[0]);
+        const form = nodes(tree).find(node => node.type === 'form' && node.props.className === 'candidate-names-form');
+        assert.equal(nodes(form).filter(node => node.type === 'textarea').length, 0);
+        assert.equal(!!button(tree, '와인 정보 저장'), status !== 'open');
+        await form.props.onSubmit({ preventDefault, currentTarget: { a: '수정 후보', b: '다른 후보', 'description:a': '', 'description:b': '덮어쓰지 않을 설명' } });
+        assert.deepEqual(requests, status === 'open' ? [] : [{ path: '/admin/candidates/names', method: 'PUT', body: { names: [{ id: 'a', name: '수정 후보' }], revision: 1 } }]);
+        assert.deepEqual(state, before);
+        if (status !== 'waiting') {
+          assert.equal(button(tree, '삭제'), undefined); assert.equal(nodes(tree).filter(node => node.type === 'input' && node.props.type === 'file').length, 0);
+        } else assert.equal(nodes(tree).filter(node => node.type === 'textarea').length, 1);
       } finally { app.close(); }
     }
     const candidate = { ...original[0], photoUrl: null }; let opened;
@@ -573,7 +583,7 @@ test('candidate descriptions submit only changed metadata and remain editable af
     assert.equal(photo.type, 'button'); assert.equal(photo.props['aria-label'], '기존 후보 설명 보기'); photo.props.onClick(); assert.equal(opened, candidate);
     const app = mount(() => uploadApi.PhotoDialog({ photo: candidate, onClose() {} }));
     try { assert.ok(JSON.stringify(app.render()).includes('기존 설명')); } finally { app.close(); }
-  } finally { restore(); }
+  } finally { globalThis.FormData = NativeFormData; restore(); }
 });
 
 test('submission status is read-only and aggregate controls use server counts without individual answers', async () => {
