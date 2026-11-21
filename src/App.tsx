@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type MouseEvent, type SetStateAction } from 'react';
 import { api, ApiError, isParticipantChanged, participantChangedMessage, saveActivityAnswer, statusText, type Activity, type Bootstrap, type ByobResult, type Candidate, type Detail, type Id, type Participant, type Results, type VotingMethod } from './api';
+import MemberPortal from './MemberPortal';
 import Admin from './Admin';
 import { rankLabel, votingMethodInfo } from './format';
 import { isCompleteRanking, moveCandidateRank, selectCustomRank } from './forms';
@@ -25,7 +26,13 @@ export function PhotoDialog({ photo, onClose }: {
     return <dialog ref={ref} className="photo-dialog" aria-labelledby={titleId} onCancel={onClose} onClick={e => { if (e.target === e.currentTarget)
         onClose(); }}><div className="row spread"><h2 id={titleId}>{photo?.name}</h2><button type="button" onClick={onClose} aria-label="사진 확대 닫기">닫기</button></div>{photo?.photoUrl && <img src={photo.photoUrl} alt={photo.name + ' 확대 사진'}/>}</dialog>;
 }
-export default function App() { return location.pathname.startsWith('/admin') ? <Admin /> : <ParticipantApp />; }
+export default function App() {
+    const [standalone, setStandalone] = useState(false);
+    const useStandalone = useCallback(() => setStandalone(true), []);
+    if (/^\/v\/[^/]+\/?$/.test(location.pathname)) return <ParticipantApp />;
+    if (standalone) return location.pathname.startsWith('/admin') ? <Admin /> : <ParticipantApp />;
+    return <MemberPortal onStandalone={useStandalone}/>;
+}
 type EventView = {
     id: Id;
     results: boolean;

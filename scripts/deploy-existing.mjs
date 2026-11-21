@@ -19,7 +19,7 @@ export function existingConfig(input, base) {
   valid(input.adminSessionCookie !== input.participantSessionCookie, 'session cookies');
   return {
     ...base, name: input.workerName, account_id: input.accountId, workers_dev: false, preview_urls: false,
-    vars: { PUBLIC_ORIGIN: origin.origin, ADMIN_SESSION_COOKIE: input.adminSessionCookie, PARTICIPANT_SESSION_COOKIE: input.participantSessionCookie },
+    vars: { PUBLIC_ORIGIN: origin.origin, ADMIN_SESSION_COOKIE: input.adminSessionCookie, PARTICIPANT_SESSION_COOKIE: input.participantSessionCookie, MEMBERSHIP_REQUIRED: 'true' },
     d1_databases: [{ binding: 'DB', database_name: input.databaseName, database_id: input.databaseId, migrations_dir: 'migrations-existing' }],
     r2_buckets: [{ binding: 'PHOTOS', bucket_name: input.bucketName }],
     routes: [...new Set(input.routes)].map(pattern => ({ pattern, custom_domain: true }))
@@ -37,8 +37,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     const config = existingConfig(input, base);
     await writeFile(target, JSON.stringify(config, null, 2), { flag: 'wx', mode: 0o600 });
     const args = process.argv.slice(2);
-    if (args.some(arg => arg !== '--dry-run')) throw new Error('Only --dry-run is supported.');
-    const child = spawnSync(process.execPath, [resolve(root, 'node_modules/wrangler/bin/wrangler.js'), 'deploy', '--config', target, ...args], { cwd: root, stdio: 'inherit' });
+    if (args.length > 1 || args.some(arg => !['--dry-run', '--migrate'].includes(arg))) throw new Error('Use --dry-run or --migrate.');
+    const command = args[0] === '--migrate' ? ['d1', 'migrations', 'apply', 'DB', '--remote'] : ['deploy', ...args];
+    const child = spawnSync(process.execPath, [resolve(root, 'node_modules/wrangler/bin/wrangler.js'), ...command, '--config', target], { cwd: root, stdio: 'inherit' });
     if (child.error) throw child.error;
     process.exitCode = child.status ?? 1;
   } catch (error) {

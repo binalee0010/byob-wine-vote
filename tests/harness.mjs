@@ -10,7 +10,7 @@ const projectRoot = fileURLToPath(new URL('..', import.meta.url));
 
 export async function createApp({ publicOrigin, persist = false, persistenceRoot, passwordHash = defaultPasswordHash, legacy = false, bindings = {} } = {}) {
   const result = await build({ absWorkingDir: projectRoot, entryPoints: ['worker/index.ts'], bundle: true, write: false,
-    format: 'esm', platform: 'neutral', target: 'es2022', external: ['node:crypto', 'node:buffer'] });
+    format: 'esm', platform: 'neutral', target: 'es2022', external: ['node:*'], loader: { '.sql': 'text' } });
   const mf = new Miniflare({ ...convertV4MiniflareOptions({ name: 'byob-test',
     modules: [{ type: 'ESModule', path: 'worker.mjs', contents: result.outputFiles[0].text }],
     compatibilityDate: '2026-11-01', compatibilityFlags: ['nodejs_compat'],
@@ -50,8 +50,8 @@ export function client(mf, initialCookie = '') {
       body = JSON.stringify(data);
     }
     const response = await mf.dispatchFetch(`https://vote.test${path}`, { method, headers, body });
-    const set = response.headers.get('set-cookie');
-    if (set) {
+    const setCookies = response.headers.getSetCookie();
+    for (const set of setCookies) {
       const name = set.split('=')[0];
       const pairs = cookie ? cookie.split('; ') : [];
       cookie = [...pairs.filter(p => !p.startsWith(name + '=')), set.split(';')[0]].join('; ');

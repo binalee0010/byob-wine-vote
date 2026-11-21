@@ -14,6 +14,7 @@ test('existing deployment preserves bindings and isolates fresh migrations witho
   const config = existingConfig(settings, base);
   assert.equal(config.name, settings.workerName);
   assert.equal(config.vars.PUBLIC_ORIGIN, 'https://vote.example.com');
+  assert.equal(config.vars.MEMBERSHIP_REQUIRED, 'true');
   assert.equal(config.vars.ADMIN_SESSION_COOKIE, settings.adminSessionCookie);
   assert.equal(config.d1_databases[0].migrations_dir, 'migrations-existing');
   assert.deepEqual(config.durable_objects, base.durable_objects);

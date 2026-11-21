@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type InputHTMLAttributes, type MouseEvent } from 'react';
 import QRCode from 'qrcode';
-import { api, ApiError, statusText, type Activity, type AdminActivity, type AdminState, type Bootstrap, type Candidate } from './api';
+import { api, apiPath, ApiError, getMemberCsrfToken, statusText, type Activity, type AdminActivity, type AdminState, type Candidate, type Member } from './api';
 import { Notice, PhotoDialog, RankedResultList, Status } from './App';
 import CandidatePhoto from './CandidatePhoto';
 import { preparePhoto } from './image';
@@ -9,7 +9,7 @@ import { candidateNameChanges, customRankCount, keepProgressEdits, maxRankCount,
 import DestructiveAction, { type Action } from './DestructiveAction';
 import VoteHistory from './VoteHistory';
 import { siteTitle } from './branding';
-import { AdminHeader, AdminLogin } from './SiteChrome';
+import { AdminHeader } from './SiteChrome';
 const voteTabs = ['투표 진행', '참가자', '와인 등록', '투표 결과', '지난 투표'];
 type ChangePassword = (currentPassword: string, newPassword: string) => Promise<void>;
 type SettingField = (key: string, fallback?: string) => {
@@ -23,22 +23,10 @@ function ServerTextInput({ serverValue, ...props }: {
     const [value, setValue] = useServerDraft(serverValue);
     return <input {...props} value={value} onChange={e => setValue(e.target.value)}/>;
 }
-export default function Admin() {
+export default function Admin({ member, onSettings, onSessionEnded }: { member?: Member; onSettings?: () => void; onSessionEnded?: () => void } = {}) {
     const [state, setState] = useState<AdminState | null>(null);
-    const [authenticated, setAuthenticated] = useState<boolean | null>(null);
-    const [publicEvent, setPublicEvent] = useState<Bootstrap | null>(null);
-    const context = state ?? publicEvent;
-    const eventTitle = context?.event.title;
+    const eventTitle = state?.event.title;
     useEffect(() => { document.title = `${eventTitle || siteTitle} · 관리자`; }, [eventTitle]);
-    useEffect(() => {
-        if (authenticated !== false)
-            return;
-        let stopped = false;
-        void api<Bootstrap>('/bootstrap').then(data => { if (!stopped && typeof data.event?.title === 'string')
-            setPublicEvent(data); }).catch(() => { });
-        return () => { stopped = true; };
-    }, [authenticated]);
-    const [password, setPassword] = useState('');
     const [tab, setTab] = useState(0);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState('');
@@ -46,24 +34,22 @@ export default function Admin() {
     const [connectionError, setConnectionError] = useState('');
     const [uploadBusy, setUploadBusy] = useState(false);
     const [registrationDraftVersion, setRegistrationDraftVersion] = useState(0);
-    const [sessionEnded, setSessionEnded] = useState(false);
-    const hadSession = useRef(false);
-    const epoch = useRef(0);
+    const [legacyChecking, setLegacyChecking] = useState(true);
+    const [password, setPassword] = useState('');
+    const loginInput = useRef<HTMLInputElement>(null);
     const passwordChanging = useRef(false);
+    const epoch = useRef(0);
     const actionPending = useRef(false);
     const refresh = useCallback(async () => {
-        if (passwordChanging.current)
-            return;
+        if (passwordChanging.current) return;
         const current = ++epoch.current;
         try {
             const data = await api<AdminState>('/admin/state');
             if (typeof data.event?.title !== 'string' || !Array.isArray(data.activities))
                 throw new Error('관리 정보를 불러오지 못했습니다. 다시 시도해 주세요.');
             if (current === epoch.current) {
-                hadSession.current = true;
-                setSessionEnded(false);
                 setState(data);
-                setAuthenticated(true);
+                setLegacyChecking(false);
                 setConnectionError('');
             }
         }
@@ -71,86 +57,18 @@ export default function Admin() {
             if (current !== epoch.current)
                 return;
             if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
-                if (hadSession.current) {
-                    hadSession.current = false;
-                    setSessionEnded(true);
-                    setError('');
-                    setMessage('');
-                }
-                setAuthenticated(false);
                 setState(null);
+                setLegacyChecking(false);
+                onSessionEnded?.();
                 setConnectionError('');
             }
             else
                 setConnectionError((e as Error).message);
         }
-    }, []);
+    }, [onSessionEnded]);
+    useEffect(() => { if (!member && !legacyChecking && !state) loginInput.current?.focus(); }, [member, legacyChecking, state]);
     useEffect(() => { let stopped = false; let timer: number; const poll = async () => { await refresh(); if (!stopped)
         timer = window.setTimeout(poll, 3000); }; void poll(); return () => { stopped = true; ++epoch.current; clearTimeout(timer); }; }, [refresh]);
-    async function login(event: FormEvent) { event.preventDefault(); setBusy(true); setError(''); setMessage(''); try {
-        ++epoch.current;
-        await api('/admin/login', 'POST', { password });
-        setPassword('');
-        await refresh();
-    }
-    catch (e) {
-        setError((e as Error).message);
-    }
-    finally {
-        setBusy(false);
-    } }
-    async function logout() { setBusy(true); try {
-        ++epoch.current;
-        await api('/admin/session', 'DELETE');
-        ++epoch.current;
-        hadSession.current = false;
-        setSessionEnded(false);
-        setAuthenticated(false);
-        setState(null);
-        setMessage('');
-    }
-    catch (e) {
-        setError((e as Error).message);
-    }
-    finally {
-        setBusy(false);
-    } }
-    const changePassword: ChangePassword = async (currentPassword, newPassword) => {
-        if (passwordChanging.current)
-            return;
-        passwordChanging.current = true;
-        ++epoch.current;
-        setBusy(true);
-        setError('');
-        setMessage('');
-        try {
-            await api('/admin/password', 'POST', { currentPassword, newPassword });
-            ++epoch.current;
-            hadSession.current = false;
-            setSessionEnded(false);
-            setPassword('');
-            setAuthenticated(false);
-            setState(null);
-            setTab(0);
-            setMessage('비밀번호를 변경했습니다. 모든 관리자 세션이 종료되었습니다. 새 비밀번호로 로그인해 주세요.');
-        }
-        catch (e) {
-            if (e instanceof ApiError && (e.code === 'unauthorized' || e.code === 'credential_changed')) {
-                ++epoch.current;
-                hadSession.current = false;
-                setSessionEnded(true);
-                setAuthenticated(false);
-                setState(null);
-                setError('');
-                setMessage('');
-            }
-            throw e;
-        }
-        finally {
-            passwordChanging.current = false;
-            setBusy(false);
-        }
-    };
     const action: Action = async (path, method, body, feedback) => {
         if (actionPending.current || passwordChanging.current)
             return false;
@@ -170,10 +88,8 @@ export default function Admin() {
             const message = (e as Error).message;
             if (e instanceof ApiError && e.status === 401) {
                 ++epoch.current;
-                hadSession.current = false;
-                setSessionEnded(true);
-                setAuthenticated(false);
                 setState(null);
+                onSessionEnded?.();
                 setError('');
                 setMessage('');
             }
@@ -188,10 +104,34 @@ export default function Admin() {
             setBusy(false);
         }
     };
-    return <div className="admin-shell"><AdminHeader title={siteTitle} onLogout={authenticated ? logout : undefined} busy={busy || uploadBusy}/><main><div className="section-heading"><h1>투표 관리</h1></div><Notice error>{connectionError}</Notice><Notice error>{error}</Notice><Notice>{!sessionEnded || authenticated ? message : ''}</Notice>{authenticated === null
-            ? connectionError ? <button type="button" onClick={() => { setConnectionError(''); void refresh(); }}>다시 불러오기</button> : <p role="status">관리자 세션을 확인하고 있습니다…</p>
-            : !authenticated ? <>{sessionEnded && <Notice>관리자 세션이 종료됐습니다. 다시 로그인한 뒤 저장되지 않은 내용을 입력하고 사진을 다시 선택해 주세요.</Notice>}<AdminLogin password={password} onChange={setPassword} onSubmit={login} busy={busy}/></> : state && <><nav className="admin-tabs" aria-label="관리 메뉴">{(voteTabs).map((title, index) => <button key={title} aria-current={tab === index ? 'page' : undefined} className={tab === index ? 'active' : ''} onClick={() => { setTab(index); setMessage(''); setError(''); }}>{title}</button>)}</nav>
-    <div hidden={tab !== 0}><Progress state={state} action={action} busy={busy || uploadBusy} changePassword={changePassword} onResetAll={() => setRegistrationDraftVersion(value => value + 1)}/></div>
+    async function legacyLogin(event: FormEvent) {
+        event.preventDefault();
+        if (actionPending.current) return;
+        actionPending.current = true; ++epoch.current; setBusy(true); setError(''); setMessage('');
+        try { await api('/admin/login', 'POST', { password }); setPassword(''); await refresh(); }
+        catch (e) { setError((e as Error).message); }
+        finally { actionPending.current = false; setBusy(false); }
+    }
+    async function legacyLogout() {
+        if (actionPending.current || passwordChanging.current) return;
+        actionPending.current = true; ++epoch.current; setBusy(true); setError('');
+        try { await api('/admin/session', 'DELETE'); ++epoch.current; setState(null); setPassword(''); setMessage('로그아웃했습니다.'); }
+        catch (e) { setError((e as Error).message); }
+        finally { actionPending.current = false; setBusy(false); }
+    }
+    const legacyChangePassword: ChangePassword = async (currentPassword, newPassword) => {
+        if (passwordChanging.current || actionPending.current) return;
+        passwordChanging.current = true; ++epoch.current; setBusy(true); setError('');
+        try { await api('/admin/password', 'POST', { currentPassword, newPassword }); ++epoch.current; setState(null); setPassword(''); setMessage('비밀번호를 변경했습니다. 새 비밀번호로 로그인해 주세요.'); }
+        finally { passwordChanging.current = false; setBusy(false); }
+    };
+    const participantUrl = state?.participantUrl ?? new URL(member ? '/v/' + encodeURIComponent(member.workspaceSlug || '') : '/', location.origin).href;
+    return <div className="admin-shell"><AdminHeader title={siteTitle} participantUrl={participantUrl} onSettings={onSettings} onLogout={!member && state ? () => { void legacyLogout(); } : undefined} busy={busy || uploadBusy}/><main><div className="section-heading"><h1>{member ? '내 투표 관리' : '투표 관리'}</h1></div><Notice error>{connectionError}</Notice><Notice error>{error}</Notice><Notice>{message}</Notice>{!state && !member && !legacyChecking
+            ? <section className="panel login-panel"><h2>관리자 로그인</h2><form onSubmit={legacyLogin}><label>비밀번호<input ref={loginInput} type="password" autoComplete="current-password" maxLength={1024} required value={password} onChange={event => setPassword(event.target.value)}/></label><button className="primary" disabled={busy || !password}>{busy ? '확인 중…' : '로그인'}</button></form></section>
+            : !state
+            ? connectionError ? <button type="button" onClick={() => { setConnectionError(''); void refresh(); }}>다시 불러오기</button> : <p role="status">내 투표를 불러오고 있습니다…</p>
+            : <><nav className="admin-tabs" aria-label="관리 메뉴">{voteTabs.map((title, index) => <button key={title} aria-current={tab === index ? 'page' : undefined} className={tab === index ? 'active' : ''} onClick={() => { setTab(index); setMessage(''); setError(''); }}>{title}</button>)}</nav>
+    <div hidden={tab !== 0}><Progress state={state} action={action} busy={busy || uploadBusy} changePassword={member ? undefined : legacyChangePassword} onResetAll={() => setRegistrationDraftVersion(value => value + 1)}/></div>
     <div hidden={tab !== 1}><Participants key={registrationDraftVersion} state={state} action={action} busy={busy || uploadBusy} refresh={refresh}/></div>
     <div hidden={tab !== 2}><Candidates key={registrationDraftVersion} state={state} action={action} busy={busy} refresh={refresh} onUploadBusy={setUploadBusy}/></div>
     <div hidden={tab !== 3}>{<RankedResponses state={state} action={action} busy={busy || uploadBusy}/>}</div>
@@ -202,7 +142,7 @@ export function Progress({ state, action, busy, changePassword, onResetAll }: {
     state: AdminState;
     action: Action;
     busy: boolean;
-    changePassword: ChangePassword;
+    changePassword?: ChangePassword;
     onResetAll?: () => void;
 }) {
     const [edits, setEdits] = useState<Record<string, string>>({});
@@ -290,7 +230,7 @@ export function Progress({ state, action, busy, changePassword, onResetAll }: {
       <Notice error>{saveError}</Notice>
       <button className="primary" disabled={busy || !dirty}>설정 모두 저장</button>
     </form>
-    <PasswordChange busy={busy} onChangePassword={changePassword}/>
+    {changePassword && <PasswordChange busy={busy} onChangePassword={changePassword}/>}
     {<section className="panel full-width destructive-panel">
       <h2>현재 투표 전체 초기화</h2>
       <p className="muted">현재 참가자, 와인과 응답을 삭제하고 투표를 대기로 되돌립니다. 지난 투표 기록은 유지됩니다.</p>
@@ -338,7 +278,7 @@ export function PasswordChange({ busy, onChangePassword }: {
             setPending(false);
         }
     }
-    return <details className="panel full-width password-settings"><summary>관리자 비밀번호 변경</summary><p className="muted">변경하면 모든 관리자 세션이 종료됩니다. 새 비밀번호로 다시 로그인해 주세요.</p><form onSubmit={submit}><fieldset className="password-fields" disabled={busy || pending}><label>현재 비밀번호<input name="currentPassword" type="password" autoComplete="current-password" maxLength={1024} required value={current} onChange={e => setCurrent(e.target.value)}/></label><label>새 비밀번호<input name="newPassword" type="password" autoComplete="new-password" minLength={10} maxLength={1024} required value={next} onChange={e => setNext(e.target.value)}/><small>10자 이상 1,024자 이하</small></label><label>새 비밀번호 확인<input name="confirmPassword" type="password" autoComplete="new-password" minLength={10} maxLength={1024} required value={confirmation} onChange={e => setConfirmation(e.target.value)}/></label><button className="primary">{pending ? '변경 중…' : '비밀번호 변경'}</button></fieldset><Notice error>{error}</Notice></form></details>;
+    return <details className="panel full-width password-settings"><summary>관리자 비밀번호 변경</summary><p className="muted">변경하면 내 계정의 모든 세션이 종료됩니다. 새 비밀번호로 다시 로그인해 주세요.</p><form onSubmit={submit}><fieldset className="password-fields" disabled={busy || pending}><label>현재 비밀번호<input name="currentPassword" type="password" autoComplete="current-password" maxLength={1024} required value={current} onChange={e => setCurrent(e.target.value)}/></label><label>새 비밀번호<input name="newPassword" type="password" autoComplete="new-password" minLength={10} maxLength={1024} required value={next} onChange={e => setNext(e.target.value)}/><small>10자 이상 1,024자 이하</small></label><label>새 비밀번호 확인<input name="confirmPassword" type="password" autoComplete="new-password" minLength={10} maxLength={1024} required value={confirmation} onChange={e => setConfirmation(e.target.value)}/></label><button className="primary">{pending ? '변경 중…' : '비밀번호 변경'}</button></fieldset><Notice error>{error}</Notice></form></details>;
 }
 export function VotingMethodSetting({ activity, busy, field }: {
     activity: Activity;
@@ -535,7 +475,7 @@ type Upload = {
     error?: string;
     prepared?: File;
 };
-function sendPhoto(upload: Upload, file: File, onProgress: (value: number) => void): Promise<void> { return new Promise((resolve, reject) => { const xhr = new XMLHttpRequest(); xhr.open('POST', '/api/admin/candidates'); xhr.responseType = 'json'; xhr.timeout = 45000; xhr.upload.onprogress = e => { if (e.lengthComputable)
+export function sendPhoto(upload: Upload, file: File, onProgress: (value: number) => void): Promise<void> { return new Promise((resolve, reject) => { const xhr = new XMLHttpRequest(); xhr.open('POST', apiPath('/admin/candidates')); const csrf = getMemberCsrfToken(); if (csrf) xhr.setRequestHeader('X-Member-CSRF', csrf); xhr.responseType = 'json'; xhr.timeout = 45000; xhr.upload.onprogress = e => { if (e.lengthComputable)
     onProgress(Math.round(e.loaded / e.total * 100)); }; xhr.onload = () => { const data = xhr.response as {
     candidate?: Candidate;
     error?: string;

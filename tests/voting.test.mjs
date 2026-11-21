@@ -36,7 +36,7 @@ test('individual BYOB configuration rejects an admin session revoked just before
     assert.equal(login.status, 200);
     const candidateSettings = () => db.prepare("SELECT voting_method,rank_points FROM activities WHERE id='byob'").first();
     const before = await candidateSettings();
-    const bundle = await build({ entryPoints: ['worker/index.ts'], bundle: true, write: false, format: 'esm', platform: 'node' });
+    const bundle = await build({ entryPoints: ['worker/index.ts'], bundle: true, write: false, format: 'esm', platform: 'node', external: ['node:*'], loader: { '.sql': 'text' } });
     const { default: worker } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].contents).toString('base64')}`);
     let revoked = false;
     const DB = { prepare: sql => {

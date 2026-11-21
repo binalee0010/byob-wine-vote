@@ -1,1 +1,1 @@
-This directory intentionally contains no SQL. Existing installations already use their original 12 migrations. Never apply `migrations/0001_initial.sql` to an existing database. The existing deployment command only publishes code and bindings; it does not run D1 migrations.
+For installations with the original 12 migrations, apply the additive membership migration with `node scripts/deploy-existing.mjs --migrate`. Fresh installations use `migrations/`. Keep the original 12 entries in D1 migration history. Automatic deployments publish code and bindings only.

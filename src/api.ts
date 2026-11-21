@@ -19,6 +19,19 @@ export type VoteHistoryRecord = VoteHistorySummary & { rows: ByobResult[] };
 export type Detail = { activity: Activity; mine: { ranking?: string[] } | null; candidates?: Candidate[]; selectionCount?: number };
 export type Results = { title: string; id: 'byob'; revision?: number; votingMethod?: VotingMethod; rows: ByobResult[] };
 export class ApiError extends Error { constructor(message: string, public status: number, public code?: string) { super(message); } }
+export type Member = { id: string; email: string; role: 'owner' | 'member'; status: 'pending' | 'approved' | 'rejected'; workspaceSlug: string | null };
+export type MemberSession = { authenticated: boolean; csrfToken: string | null; member: Member | null };
+let memberCsrfToken: string | null = null;
+let memberWorkspaceSlug: string | null = null;
+export function setMemberCsrfToken(token: string | null) { memberCsrfToken = token; }
+export function getMemberCsrfToken() { return memberCsrfToken; }
+// A document belongs to one account; changing accounts requires a full navigation.
+export function setMemberWorkspaceSlug(slug: string) { memberWorkspaceSlug ??= slug; }
+export function apiPath(path: string) {
+  const workspace = typeof location === 'undefined' ? null : location.pathname.match(/^\/v\/([^/]+)(?:\/|$)/);
+  const prefix = path.startsWith('/admin/') && memberWorkspaceSlug ? '/v/' + encodeURIComponent(memberWorkspaceSlug) : workspace ? '/v/' + workspace[1] : '';
+  return (path.startsWith('/members/') ? '' : prefix) + '/api' + path;
+}
 export const participantChangedMessage = '다른 화면에서 참가자 이름이 바뀌었습니다. 현재 이름을 확인한 뒤 다시 참여해 주세요.';
 export function isParticipantChanged(error: unknown) { return error instanceof ApiError && error.code === 'participant_changed'; }
 export function saveActivityAnswer(activity: Pick<Activity, 'id' | 'revision'>, expectedParticipantId: string, answer: { ranking: string[] }) {
@@ -28,7 +41,10 @@ export async function api<T>(path: string, method = 'GET', data?: unknown): Prom
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), 20000);
   try {
-    const response = await fetch('/api' + path, { method, cache: method === 'GET' ? 'no-store' : undefined, credentials: 'same-origin', signal: controller.signal, headers: data instanceof FormData ? undefined : data === undefined ? undefined : { 'Content-Type': 'application/json' }, body: data === undefined ? undefined : data instanceof FormData ? data : JSON.stringify(data) });
+    const headers: Record<string, string> = {};
+    if (data !== undefined && !(data instanceof FormData)) headers['Content-Type'] = 'application/json';
+    if (memberCsrfToken && (path.startsWith('/admin/') || (method !== 'GET' && path.startsWith('/members/')))) headers['X-Member-CSRF'] = memberCsrfToken;
+    const response = await fetch(apiPath(path), { method, cache: method === 'GET' ? 'no-store' : undefined, credentials: 'same-origin', signal: controller.signal, headers, body: data === undefined ? undefined : data instanceof FormData ? data : JSON.stringify(data) });
     const body = await response.json().catch(() => null) as { error?: string; code?: string } | null;
     if (!response.ok || body?.error) throw new ApiError(body?.error || '요청을 처리하지 못했습니다. 다시 시도해 주세요.', response.status, body?.code);
     if (!body || typeof body !== 'object' || Array.isArray(body) || !Object.keys(body).length) throw new Error('Invalid API response');

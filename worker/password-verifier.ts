@@ -7,9 +7,13 @@ const json=(data:unknown,status=200)=>Response.json(data,{status,headers:{'Cache
 function derive(password:string,salt:string) {
   return new Promise<Buffer>((resolve,reject)=>scrypt(password.normalize('NFKC'),salt,64,{N:16384,r:16,p:1,maxmem:67108864},(error,value)=>error?reject(error):resolve(value)));
 }
-async function matches(password:string,hash:string) {
+async function verifyPasswordHash(password:string,hash:string) {
   if(!hashFormat.test(hash))return false;
   const [,,,,salt,expected]=hash.split('$');return timingSafeEqual(await derive(password,salt),Buffer.from(expected,'hex'));
+}
+async function hashPassword(password:string) {
+  const salt=randomBytes(16).toString('hex');
+  return `scrypt$16384$16$1$${salt}$${(await derive(password,salt)).toString('hex')}`;
 }
 export class PasswordVerifier {
   constructor(_state:DurableObjectState,private env:{ADMIN_PASSWORD_HASH?:string;DB:D1Database}) {}
@@ -30,15 +34,26 @@ export class PasswordVerifier {
     if(path==='/state' && request.method==='GET')return json({version:credential.version});
     if(request.method!=='POST')return json({code:'not_found'},404);
     const data=await request.json() as Record<string,unknown>;
+    if(path==='/hash') {
+      if(typeof data.password!=='string' || data.password.length<10 || data.password.length>1024)return json({code:'invalid_request'},400);
+      return json({hash:await hashPassword(data.password)});
+    }
+    if(path==='/matches') {
+      if(typeof data.password!=='string' || !data.password.length || data.password.length>1024 || typeof data.hash!=='string')return json({code:'invalid_request'},400);
+      return json({valid:await verifyPasswordHash(data.password,data.hash)});
+    }
     if(path==='/verify') {
       if(typeof data.password!=='string' || data.password.length>1024)return json({code:'invalid_request'},400);
-      return json({valid:await matches(data.password,credential.password_hash),version:credential.version});
+      return json({valid:await verifyPasswordHash(data.password,credential.password_hash),version:credential.version});
     }
-    if(path==='/change') {
+    if(path==='/change' || path==='/member-change') {
       if(typeof data.currentPassword!=='string' || !data.currentPassword.length || data.currentPassword.length>1024 || typeof data.newPassword!=='string' || data.newPassword.length<10 || data.newPassword.length>1024 || typeof data.sessionHash!=='string' || !/^[a-f0-9]{64}$/.test(data.sessionHash))return json({code:'invalid_request'},400);
-      if(!await matches(data.currentPassword,credential.password_hash))return json({code:'invalid_current_password'},403);
-      const salt=randomBytes(16).toString('hex'),hash=`scrypt$16384$16$1$${salt}$${(await derive(data.newPassword,salt)).toString('hex')}`;
-      const changed=await this.env.DB.prepare("UPDATE admin_credentials SET password_hash=?,version=? WHERE id=1 AND version=? AND EXISTS(SELECT 1 FROM sessions WHERE token_hash=? AND role='admin' AND expires_at>? AND credential_version=admin_credentials.version)").bind(hash,crypto.randomUUID(),credential.version,data.sessionHash,Date.now()).run();
+      if(!await verifyPasswordHash(data.currentPassword,credential.password_hash))return json({code:'invalid_current_password'},403);
+      const hash=await hashPassword(data.newPassword);
+      const guard=path==='/change'
+        ? "EXISTS(SELECT 1 FROM sessions WHERE token_hash=? AND role='admin' AND expires_at>? AND credential_version=admin_credentials.version)"
+        : "EXISTS(SELECT 1 FROM member_sessions s JOIN members m ON m.id=s.member_id WHERE s.token_hash=? AND m.id='owner' AND m.role='owner' AND m.status='approved' AND s.expires_at>? AND s.credential_version=admin_credentials.version)";
+      const changed=await this.env.DB.prepare(`UPDATE admin_credentials SET password_hash=?,version=? WHERE id=1 AND version=? AND ${guard}`).bind(hash,crypto.randomUUID(),credential.version,data.sessionHash,Date.now()).run();
       if(!changed.meta.changes)return json({code:'credential_changed'},409);
       return json({ok:true});
     }

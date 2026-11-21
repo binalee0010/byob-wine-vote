@@ -1,4 +1,7 @@
 import { PasswordVerifier } from './password-verifier';
+import { getMemberSession, getWorkspaceBySlug, handleMemberRequest, type MemberSession } from './members';
+import { ensureWorkspace, workspaceEnv, workspacePhotoKey, type Workspace } from './workspaces';
+import { retryPendingNotices } from './signup-mail';
 export { PasswordVerifier };
 export interface Env {
   DB: D1Database;
@@ -9,6 +12,11 @@ export interface Env {
   PUBLIC_ORIGIN?: string;
   ADMIN_SESSION_COOKIE?: string;
   PARTICIPANT_SESSION_COOKIE?: string;
+  SUPERADMIN_EMAIL?: string;
+  MEMBERSHIP_REQUIRED?: string;
+  SMTP_CONFIG?: string;
+  WORKSPACE?: Workspace;
+  MEMBER_SESSION?: MemberSession;
 }
 
 type ActivityId = 'byob';
@@ -26,7 +34,21 @@ type AnswerRow = { participant_id: string; name: string; payload: string };
 const ids: ActivityId[] = ['byob'];
 const encoder = new TextEncoder();
 const MAX_PHOTO = 5 * 1024 * 1024;
-const activeAdmin = "EXISTS(SELECT 1 FROM sessions WHERE token_hash=? AND role='admin' AND expires_at>?)";
+function memberAuthorization(env: Env) {
+  const member = env.MEMBER_SESSION;
+  if (!member || !/^[a-f0-9]{64}$/.test(member.tokenHash)) return '0';
+  const namespace = env.WORKSPACE?.namespace;
+  if (namespace && !/^m_[a-f0-9]{32}$/.test(namespace)) throw new Error('Invalid internal workspace');
+  return `EXISTS(SELECT 1 FROM member_sessions ms JOIN members m ON m.id=ms.member_id
+    WHERE ms.token_hash='${member.tokenHash}' AND ms.expires_at>${Date.now()} AND m.status='approved'
+    AND ((m.role='member' AND ms.credential_version=m.credential_version)
+      OR (m.role='owner' AND EXISTS(SELECT 1 FROM admin_credentials WHERE id=1 AND version=ms.credential_version)))
+    AND m.namespace ${namespace ? `='${namespace}'` : 'IS NULL'})`;
+}
+function activeAdmin(env: Env) {
+  const local = "EXISTS(SELECT 1 FROM sessions WHERE token_hash=? AND role='admin' AND expires_at>?)";
+  return env.SUPERADMIN_EMAIL ? `${local} AND ${memberAuthorization(env)}` : local;
+}
 const activeParticipant = "EXISTS(SELECT 1 FROM sessions WHERE token_hash=? AND role='participant' AND participant_id=? AND expires_at>?)";
 const cookieNames = { admin: '__Host-byob_admin', participant: '__Host-byob_participant' };
 const noOtherActivityData = "NOT EXISTS(SELECT 1 FROM answers WHERE activity_id<>'byob') AND NOT EXISTS(SELECT 1 FROM activities WHERE id<>'byob' AND (started_at IS NOT NULL OR status<>'waiting' OR published<>0))";
@@ -69,7 +91,8 @@ function activityPublic(a: Activity) {
     started: a.started_at !== null, revision: a.revision,
     votingMethod: publicVotingMethod(a.voting_method), rankPoints: rankPoints(a) };
 }
-function candidatePublic(c: Pick<Candidate, 'id' | 'number' | 'name' | 'object_key'>) { return { id: c.id, number: c.number, name: c.name, photoUrl: c.object_key ? `/api/photos/${c.id}` : null }; }
+function apiPath(env: Env, path: string) { return `${env.WORKSPACE ? `/v/${env.WORKSPACE.slug}` : ''}/api${path}`; }
+function candidatePublic(c: Pick<Candidate, 'id' | 'number' | 'name' | 'object_key'>, env: Env) { return { id: c.id, number: c.number, name: c.name, photoUrl: c.object_key ? apiPath(env, `/photos/${c.id}`) : null }; }
 async function body(request: Request, max = 32768): Promise<Record<string, unknown>> {
   if (!request.headers.get('content-type')?.startsWith('application/json')) fail(415, 'JSON 요청이 필요합니다.');
   const raw = await boundedBody(request, max);
@@ -95,9 +118,15 @@ function cookieName(env: Env, role: 'admin' | 'participant') {
 }
 function sessionCookie(env: Env, role: 'admin' | 'participant', token: string, seconds: number) { return `${cookieName(env, role)}=${token}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${seconds}`; }
 async function session(request: Request, env: Env, role: 'admin' | 'participant'): Promise<Session | null> {
+  if (role === 'admin' && env.SUPERADMIN_EMAIL) {
+    const member = env.MEMBER_SESSION ?? await getMemberSession(request, env);
+    if (member?.status !== 'approved' || member.namespace !== (env.WORKSPACE?.namespace ?? null)) return null;
+    env = { ...env, MEMBER_SESSION: member };
+  }
   const token = readCookie(request, cookieName(env, role)); if (!/^[a-f0-9]{64}$/.test(token)) return null;
   const version=role==='admin'?await credentialVersion(env):null;
-  return env.DB.prepare("SELECT role,participant_id,token_hash FROM sessions WHERE token_hash=? AND role=? AND expires_at>? AND(role='participant' OR credential_version=?)").bind(await digest(token), role, Date.now(),version).first<Session>();
+  const memberGuard = role === 'admin' && env.SUPERADMIN_EMAIL ? ` AND ${memberAuthorization(env)}` : '';
+  return env.DB.prepare(`SELECT role,participant_id,token_hash FROM sessions WHERE token_hash=? AND role=? AND expires_at>? AND(role='participant' OR credential_version=?)${memberGuard}`).bind(await digest(token), role, Date.now(),version).first<Session>();
 }
 async function requireAdmin(request: Request, env: Env) { return await session(request, env, 'admin') ?? fail(401, '관리자 로그인이 필요합니다.', 'unauthorized'); }
 async function requireParticipant(request: Request, env: Env) {
@@ -120,6 +149,17 @@ async function createSession(request: Request, env: Env, role: 'admin' | 'partic
   return sessionCookie(env, role, token, seconds);
 }
 async function revoke(request: Request, env: Env, role: 'admin' | 'participant', all = false) {
+  if (all && env.SUPERADMIN_EMAIL) {
+    const member = env.MEMBER_SESSION ?? fail(401, '회원 로그인이 필요합니다.', 'unauthorized');
+    const authorized = `WITH authorized AS MATERIALIZED (SELECT 1 WHERE ${memberAuthorization(env)})`;
+    await env.DB.batch([
+      env.DB.prepare(`${authorized} DELETE FROM sessions WHERE role='admin' AND EXISTS(SELECT 1 FROM authorized)`),
+      env.DB.prepare(`${authorized} DELETE FROM member_sessions WHERE member_id=? AND EXISTS(SELECT 1 FROM authorized)`).bind(member.id)
+    ]);
+    const headers = new Headers({ 'Set-Cookie': sessionCookie(env, role, '', 0) });
+    headers.append('Set-Cookie', '__Host-byob_member=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0');
+    return json({ ok: true }, 200, headers);
+  }
   if (all) await env.DB.prepare("DELETE FROM sessions WHERE role='admin'").run();
   else await env.DB.prepare('DELETE FROM sessions WHERE token_hash=? AND role=?').bind(await digest(readCookie(request, cookieName(env, role))), role).run();
   return json({ ok: true }, 200, { 'Set-Cookie': sessionCookie(env, role, '', 0) });
@@ -137,6 +177,10 @@ async function passwordService(env:Env,path:string,data?:unknown) {
   return stub.fetch(url, init);
 }
 async function credentialVersion(env:Env) {
+  if (env.SUPERADMIN_EMAIL && env.WORKSPACE?.namespace) {
+    return (await env.DB.prepare('SELECT version FROM admin_credentials WHERE id=1').first<{version:string}>())?.version
+      ?? fail(503, '회원 투표 세션 설정을 확인해 주세요.', 'admin_unconfigured');
+  }
   const response=await passwordService(env,'/state');
   if (!response.ok) fail(503, '관리자 비밀번호 설정을 확인해 주세요.', 'admin_unconfigured');
   return ((await response.json()) as {version:string}).version;
@@ -145,6 +189,32 @@ async function verifyPassword(password: string, env: Env) {
   const response=await passwordService(env,'/verify',{password});
   if(!response.ok)fail(503,'관리자 비밀번호 설정을 확인해 주세요.','admin_unconfigured');
   return await response.json() as {valid:boolean;version:string};
+}
+export async function legacyAdminCredential(env: Env) {
+  const version = await credentialVersion({ ...env, WORKSPACE: undefined });
+  const credential = await env.DB.prepare('SELECT password_hash FROM admin_credentials WHERE id=1').first<{password_hash:string}>();
+  if (!credential) fail(503, '관리자 비밀번호 설정을 확인해 주세요.', 'admin_unconfigured');
+  return { passwordHash: credential.password_hash, version };
+}
+export async function memberAdminSession(request: Request, env: Env, workspace: Workspace) {
+  await ensureWorkspace(env, workspace);
+  const scoped = workspaceEnv(env, workspace);
+  if (workspace.namespace) {
+    await scoped.DB.prepare('INSERT OR IGNORE INTO admin_credentials(id,password_hash,bootstrap_fingerprint,version) VALUES(1,?,?,?)')
+      .bind('membership-only', 'membership-only', crypto.randomUUID()).run();
+  }
+  return createSession(request, scoped, 'admin', null, await credentialVersion(scoped));
+}
+export async function revokeWorkspaceAdmins(env: Env, workspace: Workspace) {
+  if (workspace.namespace && !await env.DB.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").bind(`${workspace.namespace}_sessions`).first()) return;
+  await workspaceEnv(env, workspace).DB.prepare("DELETE FROM sessions WHERE role='admin'").run();
+}
+export async function revokeWorkspaceAdmin(request: Request, env: Env, workspace: Workspace) {
+  const scoped = workspaceEnv(env, workspace);
+  if (!workspace.namespace || await env.DB.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").bind(`${workspace.namespace}_sessions`).first()) {
+    await scoped.DB.prepare("DELETE FROM sessions WHERE token_hash=? AND role='admin'").bind(await digest(readCookie(request, cookieName(scoped, 'admin')))).run();
+  }
+  return sessionCookie(scoped, 'admin', '', 0);
 }
 async function changePassword(request:Request,env:Env,admin:Session) {
   await rateLimit(request,env,'admin-password',8);
@@ -181,9 +251,9 @@ const rankedCandidateSql = `SELECT c.*,coalesce(tally.score,0) AS score FROM can
     JOIN activities activity ON activity.id=a.activity_id
     WHERE a.activity_id='byob' GROUP BY ballot.value
   ) tally ON c.id=tally.candidate_id ORDER BY c.number,c.id`;
-function rankedResults(rows: HistoryCandidate[], method: VotingMethod) {
+function rankedResults(rows: HistoryCandidate[], method: VotingMethod, env: Env) {
   const ranked = rankRows(rows, row => row.score, true);
-  return ranked.map(c => ({ ...candidatePublic(c), candidateId: c.id, rank: c.rank, ...(method === 'winner' ? { votes: c.score } : { points: c.score }) }));
+  return ranked.map(c => ({ ...candidatePublic(c, env), candidateId: c.id, rank: c.rank, ...(method === 'winner' ? { votes: c.score } : { points: c.score }) }));
 }
 async function historySummary(row: HistoryRow, summary: HistorySummary) {
   const { title, activityTitle, startedAt, votingMethod, rankPoints, ballotCount } = summary;
@@ -202,8 +272,8 @@ async function historyDetail(env: Env, id: string) {
   const snapshot = JSON.parse(row.snapshot) as HistorySummary & { rows: HistoryCandidate[] };
   return json({ record: {
     ...await historySummary(row, snapshot),
-    rows: rankedResults(snapshot.rows, snapshot.votingMethod).map(candidate => ({
-      ...candidate, photoUrl: candidate.photoUrl ? `/api/admin/history/${row.id}/photos/${candidate.id}` : null
+    rows: rankedResults(snapshot.rows, snapshot.votingMethod, env).map(candidate => ({
+      ...candidate, photoUrl: candidate.photoUrl ? apiPath(env, `/admin/history/${row.id}/photos/${candidate.id}`) : null
     }))
   } });
 }
@@ -216,7 +286,7 @@ async function changeHistory(request: Request, env: Env, admin: Session, id: str
   if (request.method === 'DELETE') {
     if (data.confirm !== 'delete-history') fail(400, '투표 기록 삭제를 확인해 주세요.');
     // Archive deletion intentionally leaves photo objects and all current voting data intact.
-    changed = await env.DB.prepare(`DELETE FROM vote_history WHERE id=? AND snapshot=? AND ${activeAdmin}`)
+    changed = await env.DB.prepare(`DELETE FROM vote_history WHERE id=? AND snapshot=? AND ${activeAdmin(env)}`)
       .bind(id, row.snapshot, admin.token_hash, Date.now()).run();
   } else {
     const title = text(data.title, '모임 이름', 160);
@@ -230,7 +300,7 @@ async function changeHistory(request: Request, env: Env, admin: Session, id: str
     }
     snapshot.title = title;
     snapshot.rows = snapshot.rows.map(candidate => names.has(candidate.id) ? { ...candidate, name: names.get(candidate.id)! } : candidate);
-    changed = await env.DB.prepare(`UPDATE vote_history SET snapshot=? WHERE id=? AND snapshot=? AND ${activeAdmin}`)
+    changed = await env.DB.prepare(`UPDATE vote_history SET snapshot=? WHERE id=? AND snapshot=? AND ${activeAdmin(env)}`)
       .bind(JSON.stringify(snapshot), id, row.snapshot, admin.token_hash, Date.now()).run();
   }
   if (!changed.meta.changes) {
@@ -261,7 +331,7 @@ async function saveHistory(request: Request, env: Env, admin: Session) {
         'object_key',c.object_key,'content_type',c.content_type,'score',c.score)) FROM (${rankedCandidateSql}) c)
     )
     FROM activities a CROSS JOIN event e WHERE a.id='byob' AND e.id=1 AND a.status='closed'
-      AND a.revision=? AND e.roster_revision=? AND ${activeAdmin}
+      AND a.revision=? AND e.roster_revision=? AND ${activeAdmin(env)}
     ON CONFLICT(revision) DO NOTHING RETURNING id`)
     .bind(id, new Date().toISOString(), revision, rosterRevision, admin.token_hash, Date.now()).first<{ id: string }>();
   if (saved) return json({ ok: true, id: saved.id, reused: false });
@@ -296,7 +366,7 @@ async function detail(request: Request, env: Env, id: ActivityId) {
   if (initial.status !== 'open' || initial.published) fail(403, '현재 참여할 수 없는 투표입니다.', 'activity_unavailable');
   const row = await env.DB.prepare("SELECT payload FROM answers WHERE activity_id=? AND participant_id=? AND EXISTS(SELECT 1 FROM activities WHERE id=? AND status='open' AND published=0)")
     .bind(id, participant.id, id).first<{ payload: string }>();
-  const candidateRows = (await candidates(env)).map(candidatePublic);
+  const candidateRows = (await candidates(env)).map(c => candidatePublic(c, env));
   const current = await activity(env, id);
   sameRevision(current, initial.revision);
   if (current.status !== 'open' || current.published) fail(403, '현재 참여할 수 없는 투표입니다.', 'activity_unavailable');
@@ -341,15 +411,16 @@ async function results(env: Env, id: ActivityId) {
   const current = await activity(env, id);
   if (current.revision !== initial.revision || !current.published) fail(403, '결과가 아직 공개되지 않았습니다.', 'results_unpublished');
   return json({ id, title: initial.title, mode: 'ranked-byob', votingMethod: publicVotingMethod(initial.voting_method),
-    revision: initial.revision, rows: rankedResults(rows, initial.voting_method ?? 'full') });
+    revision: initial.revision, rows: rankedResults(rows, initial.voting_method ?? 'full', env) });
 }
 function participantUrl(request: Request, env: Env) {
   const configured = env.PUBLIC_ORIGIN;
-  if (!configured) return new URL('/', request.url).href;
+  const path = env.WORKSPACE ? `/v/${env.WORKSPACE.slug}` : '/';
+  if (!configured) return new URL(path, request.url).href;
   try {
     const url = new URL(configured);
     if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) throw new Error('invalid origin');
-    return new URL('/', url.origin).href;
+    return new URL(path, url.origin).href;
   } catch { return fail(503, '참가 주소 설정을 확인해 주세요.', 'origin_unconfigured'); }
 }
 async function adminState(request: Request, env: Env) {
@@ -365,10 +436,10 @@ async function adminState(request: Request, env: Env) {
     mode: 'ranked-byob', event: metadata, rosterRevision, participantUrl: participantUrl(request, env),
     photoCleanupPending: (cleanup.results[0] as { count: number }).count,
     activities: activityList.map(a => ({ ...activityPublic(a), resultVisibility: a.publish_on_close ? 'public' : 'private', resultsLocked: Boolean(a.results_locked) })),
-    participants: participants.results, candidates: (candidateRows.results as Candidate[]).map(candidatePublic),
+    participants: participants.results, candidates: (candidateRows.results as Candidate[]).map(c => candidatePublic(c, env)),
     answers: { byob: (answers.results as AnswerRow[]).map(row => ({ participantId: row.participant_id, name: row.name, ranking: JSON.parse(row.payload).ranking })) },
     currentHistoryId: activityList[0]?.current_history_id ?? null,
-    byobResults: rankedResults(candidateRows.results as RankedCandidate[], activityList[0]?.voting_method ?? 'full')
+    byobResults: rankedResults(candidateRows.results as RankedCandidate[], activityList[0]?.voting_method ?? 'full', env)
   });
 }
 function eventStartTime(value: unknown) {
@@ -384,7 +455,7 @@ async function updateEvent(request: Request, env: Env, admin: Session) {
   const data = await body(request);
   if (data.timezone !== 'Asia/Seoul') fail(400, '한국 시간의 유효한 행사 일시를 입력해 주세요.');
   const title = text(data.title, '행사명', 160), startsAt = eventStartTime(data.startsAt);
-  const updated = await env.DB.prepare(`UPDATE event SET title=?,starts_at=?,timezone='Asia/Seoul' WHERE id=1 AND ${activeAdmin}`)
+  const updated = await env.DB.prepare(`UPDATE event SET title=?,starts_at=?,timezone='Asia/Seoul' WHERE id=1 AND ${activeAdmin(env)}`)
     .bind(title, startsAt, admin.token_hash, Date.now()).run();
   if (!updated.meta.changes) await requireAdmin(request, env);
   return ok();
@@ -416,7 +487,7 @@ async function configure(request: Request, env: Env, id: ActivityId, admin: Sess
   const updated = await env.DB.prepare(`UPDATE activities
     SET title=coalesce(?,title)${votingMethod !== null ? ',voting_method=?' : ''}${points !== null ? ',rank_points=?' : ''}
     WHERE id=? AND revision=? AND (started_at IS NULL OR ?=0)${pointsOnly ? " AND voting_method='top2'" : ''}
-    AND ${activeAdmin}`)
+    AND ${activeAdmin(env)}`)
     .bind(title, ...methodChanges, id, revision, Number(lockedAfterStart), admin.token_hash, Date.now()).run();
   if (!updated.meta.changes) {
     await requireAdmin(request, env);
@@ -468,7 +539,7 @@ async function updateSettings(request: Request, env: Env, admin: Session) {
       json_extract(value,'$.rankPoints') AS rank_points,json_extract(value,'$.publishOnClose') AS publish_on_close FROM json_each(?)
   )`;
   // Each statement uses the same guard. Accepted updates cannot change any of its conditions.
-  const guard = `${activeAdmin} AND EXISTS(SELECT 1 FROM event WHERE id=1) AND NOT EXISTS (
+  const guard = `${activeAdmin(env)} AND EXISTS(SELECT 1 FROM event WHERE id=1) AND NOT EXISTS (
     SELECT 1 FROM edits e LEFT JOIN activities a ON a.id=e.id
     WHERE a.id IS NULL OR a.revision<>e.revision
     OR (e.rank_points IS NOT NULL AND coalesce(e.voting_method,a.voting_method)<>'top2')
@@ -518,7 +589,7 @@ async function changeState(request: Request, env: Env, id: ActivityId, admin: Se
   else if (data.action === 'publish') sql = "UPDATE activities SET published=1 WHERE id=? AND status='closed' AND published=0";
   else return fail(400, '상태 변경을 확인해 주세요.');
   const startedAt = data.action === 'open' ? [new Date().toISOString()] : [];
-  const result = await env.DB.prepare(`${sql} AND revision=? AND ${activeAdmin}`)
+  const result = await env.DB.prepare(`${sql} AND revision=? AND ${activeAdmin(env)}`)
     .bind(...startedAt, id, revision, admin.token_hash, Date.now()).run();
   if (!result.meta.changes) {
     await requireAdmin(request, env);
@@ -534,7 +605,7 @@ async function resetActivities(request: Request, env: Env, admin: Session, id?: 
   const activityIds = ids;
   let changed: D1Result;
   if (id) {
-    changed = await env.DB.prepare(`${reset} WHERE id=? AND revision=? AND ${activeAdmin} RETURNING id`)
+    changed = await env.DB.prepare(`${reset} WHERE id=? AND revision=? AND ${activeAdmin(env)} RETURNING id`)
       .bind(id, revisionNumber(data.expectedRevision), admin.token_hash, Date.now()).all();
   } else {
     const revisions = data.expectedRevisions;
@@ -543,7 +614,7 @@ async function resetActivities(request: Request, env: Env, admin: Session, id?: 
     changed = await env.DB.prepare(`WITH rounds AS MATERIALIZED (
         SELECT id FROM activities WHERE ${activityIds.map(() => '(id=? AND revision=?)').join(' OR ')}
       ) ${reset} WHERE id IN (SELECT id FROM rounds WHERE (SELECT count(*) FROM rounds)=?)
-        AND ${activeAdmin} RETURNING id`)
+        AND ${activeAdmin(env)} RETURNING id`)
       .bind(...activityIds.flatMap(key => [key, revisionNumber(expected[key])]), activityIds.length, admin.token_hash, Date.now()).all();
   }
   if (changed.results.length !== (id ? 1 : activityIds.length)) {
@@ -560,7 +631,7 @@ async function resetRankedVote(request: Request, env: Env, admin: Session) {
   const updated = await env.DB.prepare(`UPDATE activities SET status='waiting',published=0,publish_on_close=0,started_at=NULL,
     revision=revision+1,full_reset_revision=revision+1
     WHERE id='byob' AND revision=? AND EXISTS(SELECT 1 FROM event WHERE id=1 AND roster_revision=?)
-    AND ${rosterGuard} AND ${activeAdmin} RETURNING revision`)
+    AND ${rosterGuard} AND ${activeAdmin(env)} RETURNING revision`)
     .bind(revision, rosterRevision, admin.token_hash, Date.now()).first<{ revision: number }>();
   if (!updated) {
     await requireAdmin(request, env);
@@ -575,7 +646,7 @@ async function addParticipants(request: Request, env: Env, admin: Session) {
   const created: Participant[] = [], duplicates: string[] = [], invalid: string[] = [];
   for (const value of data.names) { let name: string; try { name = normalizeName(value); } catch { invalid.push(typeof value === 'string' ? value.slice(0, 80) : ''); continue; }
     const id = crypto.randomUUID();
-    const inserted = await env.DB.prepare(`INSERT INTO participants(id,name,name_key) SELECT ?,?,? WHERE ${activeAdmin} ON CONFLICT(name_key) DO NOTHING`)
+    const inserted = await env.DB.prepare(`INSERT INTO participants(id,name,name_key) SELECT ?,?,? WHERE ${activeAdmin(env)} ON CONFLICT(name_key) DO NOTHING`)
       .bind(id, name, nameKey(name), admin.token_hash, Date.now()).run();
     if (inserted.meta.changes) created.push({ id, name });
     else { await requireAdmin(request, env); duplicates.push(name); }
@@ -584,7 +655,7 @@ async function addParticipants(request: Request, env: Env, admin: Session) {
 }
 async function renameParticipant(request: Request, env: Env, id: string, admin: Session) {
   const data = await body(request), name = normalizeName(data.name);
-  const updated = await env.DB.prepare(`UPDATE participants SET name=?,name_key=? WHERE id=? AND ${activeAdmin}`)
+  const updated = await env.DB.prepare(`UPDATE participants SET name=?,name_key=? WHERE id=? AND ${activeAdmin(env)}`)
     .bind(name, nameKey(name), id, admin.token_hash, Date.now()).run();
   if (!updated.meta.changes) {
     await requireAdmin(request, env);
@@ -598,9 +669,9 @@ async function deleteParticipants(request: Request, env: Env, admin: Session, id
   const now = Date.now();
   const rosterGuard = await sharedRosterGuard(env);
   const removed = id
-    ? await env.DB.prepare(`DELETE FROM participants WHERE id=? AND ${rosterGuard} AND ${activeAdmin}`).bind(id, admin.token_hash, now).run()
+    ? await env.DB.prepare(`DELETE FROM participants WHERE id=? AND ${rosterGuard} AND ${activeAdmin(env)}`).bind(id, admin.token_hash, now).run()
     : await env.DB.prepare(`WITH selection AS MATERIALIZED (
-        SELECT participants.id FROM participants CROSS JOIN event WHERE event.id=1 AND roster_revision=? AND ${rosterGuard} AND ${activeAdmin}
+        SELECT participants.id FROM participants CROSS JOIN event WHERE event.id=1 AND roster_revision=? AND ${rosterGuard} AND ${activeAdmin(env)}
       ) DELETE FROM participants WHERE id IN (SELECT id FROM selection)`)
       .bind(revisionNumber(data.expectedRosterRevision), admin.token_hash, now).run();
   if (!removed.meta.changes) {
@@ -612,6 +683,7 @@ async function deleteParticipants(request: Request, env: Env, admin: Session, id
   return ok();
 }
 async function sharedRosterGuard(env: Env) {
+  if (env.WORKSPACE?.namespace) return noOtherActivityData;
   const legacyGrades = await env.DB.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='grades'").first();
   return noOtherActivityData + (legacyGrades ? ' AND NOT EXISTS(SELECT 1 FROM grades)' : '');
 }
@@ -649,10 +721,10 @@ async function addCandidate(request: Request, env: Env, admin: Session) {
   const a = await activity(env, 'byob');
   sameRevision(a, revision);
   const lookup = () => env.DB.prepare(`SELECT * FROM candidates WHERE request_id=?
-    AND EXISTS(SELECT 1 FROM activities WHERE id='byob' AND revision=?) AND ${activeAdmin}`)
+    AND EXISTS(SELECT 1 FROM activities WHERE id='byob' AND revision=?) AND ${activeAdmin(env)}`)
     .bind(requestId, revision, admin.token_hash, Date.now());
   const existing = await lookup().first<Candidate>();
-  if (existing) return json({ candidate: candidatePublic(existing), reused: true });
+  if (existing) return json({ candidate: candidatePublic(existing, env), reused: true });
   if (a.started_at) fail(409, '투표 시작 후 후보를 변경할 수 없습니다.', 'candidates_locked');
   const id = crypto.randomUUID();
   let key = '', photoType = '';
@@ -662,13 +734,13 @@ async function addCandidate(request: Request, env: Env, admin: Session) {
     const content = new Uint8Array(await file.arrayBuffer());
     photoType = imageType(content);
     if (file.type !== photoType) fail(415, '사진 내용과 형식이 일치하지 않습니다.');
-    key = `candidates/${id}`;
+    key = workspacePhotoKey(env.WORKSPACE, `candidates/${id}`);
     await env.PHOTOS.put(key, content, { httpMetadata: { contentType: photoType } });
   }
   try {
     await env.DB.prepare(`INSERT INTO candidates(id,number,name,object_key,content_type,request_id)
       SELECT ?,coalesce((SELECT max(number) FROM candidates),0)+1,?,?,?,?
-      WHERE EXISTS(SELECT 1 FROM activities WHERE id='byob' AND revision=? AND started_at IS NULL) AND ${activeAdmin}
+      WHERE EXISTS(SELECT 1 FROM activities WHERE id='byob' AND revision=? AND started_at IS NULL) AND ${activeAdmin(env)}
       ON CONFLICT(request_id) DO NOTHING`).bind(id, name, key, photoType, requestId, revision, admin.token_hash, Date.now()).run();
     const saved = await lookup().first<Candidate>();
     if (!saved) {
@@ -677,7 +749,7 @@ async function addCandidate(request: Request, env: Env, admin: Session) {
       fail(409, '투표가 시작되어 후보를 추가할 수 없습니다.', 'candidates_locked');
     }
     if (key && saved.id !== id) await env.PHOTOS.delete(key);
-    return json({ candidate: candidatePublic(saved), reused: saved.id !== id });
+    return json({ candidate: candidatePublic(saved, env), reused: saved.id !== id });
   } catch (error) {
     // A failed response can follow a committed INSERT; preserve its object on ambiguous DB failures.
     if (key) {
@@ -699,7 +771,7 @@ async function addCandidate(request: Request, env: Env, admin: Session) {
 async function changeCandidate(request: Request, env: Env, id: string, admin: Session) {
   const data = await body(request), name = text(data.name, '와인명', 160), revision = requestRevision(data.revision);
   const result = await env.DB.prepare(`UPDATE candidates SET name=? WHERE id=?
-    AND EXISTS(SELECT 1 FROM activities WHERE id='byob' AND revision=? AND started_at IS NULL) AND ${activeAdmin}`)
+    AND EXISTS(SELECT 1 FROM activities WHERE id='byob' AND revision=? AND started_at IS NULL) AND ${activeAdmin(env)}`)
     .bind(name, id, revision, admin.token_hash, Date.now()).run();
   if (!result.meta.changes) {
     await requireAdmin(request, env);
@@ -724,7 +796,7 @@ async function renameCandidates(request: Request, env: Env, admin: Session) {
     ) UPDATE candidates SET name=(SELECT edits.name FROM edits WHERE edits.id=candidates.id)
     WHERE id IN (SELECT id FROM edits)
       AND EXISTS(SELECT 1 FROM activities WHERE id='byob' AND revision=? AND started_at IS NULL)
-      AND ${activeAdmin}
+      AND ${activeAdmin(env)}
       AND (SELECT count(*) FROM edits JOIN candidates c ON c.id=edits.id)=(SELECT count(*) FROM edits)
     RETURNING id`).bind(JSON.stringify(names), revision, admin.token_hash, Date.now()).all<{ id: string }>();
   if (updated.results.length !== names.length) {
@@ -745,7 +817,7 @@ async function reorderCandidates(request: Request, env: Env, admin: Session) {
     WHERE EXISTS(SELECT 1 FROM activities WHERE id='byob' AND revision=? AND started_at IS NULL)
       AND (SELECT count(*) FROM candidates)=json_array_length(?)
       AND NOT EXISTS(SELECT 1 FROM candidates WHERE id NOT IN (SELECT value FROM json_each(?)))
-      AND ${activeAdmin}`).bind(encoded, revision, encoded, encoded, admin.token_hash, Date.now()).run();
+      AND ${activeAdmin(env)}`).bind(encoded, revision, encoded, encoded, admin.token_hash, Date.now()).run();
   if (result.meta.changes !== list.length || !list.length) {
     await requireAdmin(request, env);
     const current = await activity(env, 'byob');
@@ -759,10 +831,10 @@ async function deleteCandidate(request: Request, env: Env, id: string, admin: Se
   const authorization = [admin.token_hash, Date.now()];
   const batch = await env.DB.batch([
     env.DB.prepare(`DELETE FROM candidates WHERE id=? AND EXISTS(SELECT 1 FROM activities WHERE id='byob' AND revision=? AND started_at IS NULL)
-      AND ${activeAdmin} RETURNING object_key`).bind(id, revision, ...authorization),
+      AND ${activeAdmin(env)} RETURNING object_key`).bind(id, revision, ...authorization),
     env.DB.prepare(`WITH ordering AS MATERIALIZED (SELECT id,row_number() OVER (ORDER BY number,id) AS n FROM candidates)
       UPDATE candidates SET number=(SELECT n FROM ordering WHERE ordering.id=candidates.id)
-      WHERE EXISTS(SELECT 1 FROM activities WHERE id='byob' AND revision=? AND started_at IS NULL) AND ${activeAdmin}`).bind(revision, ...authorization)
+      WHERE EXISTS(SELECT 1 FROM activities WHERE id='byob' AND revision=? AND started_at IS NULL) AND ${activeAdmin(env)}`).bind(revision, ...authorization)
   ]);
   const removed = batch[0].results[0] as { object_key: string } | undefined;
   if (!removed) {
@@ -795,7 +867,7 @@ async function resetCandidates(request: Request, env: Env, admin: Session) {
   const data = await body(request);
   if (data.confirm !== 'reset-wines') fail(400, '와인 후보 초기화를 확인해 주세요.');
   const revision = revisionNumber(data.revision);
-  const guard = `${activeAdmin}
+  const guard = `${activeAdmin(env)}
     AND EXISTS(SELECT 1 FROM activities WHERE id='byob' AND revision=? AND started_at IS NULL AND status='waiting' AND published=0)
     AND NOT EXISTS(SELECT 1 FROM answers WHERE activity_id='byob')`;
   const bindings = [admin.token_hash, Date.now(), revision];
@@ -918,6 +990,48 @@ async function route(request: Request, env: Env): Promise<Response> {
   }
   return fail(404, '요청한 경로가 없습니다.', 'not_found');
 }
+function withPath(request: Request, path: string) {
+  const url = new URL(request.url); url.pathname = path;
+  return new Request(url, request);
+}
+async function memberRoute(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
+  const path = new URL(request.url).pathname;
+  if (path === '/api/members' || path.startsWith('/api/members/')) {
+    if (!['GET', 'HEAD'].includes(request.method)) sameOrigin(request);
+    return await handleMemberRequest(request, env, ctx) ?? fail(404, '요청한 경로가 없습니다.', 'not_found');
+  }
+  if (path === '/api/mode' && request.method === 'GET') return json({ mode: 'ranked-byob', membership: true, ownerUrl: '/v/owner' });
+  const match = /^\/v\/([a-z0-9][a-z0-9-]{1,47})(\/api\/.*)?\/?$/.exec(path);
+  let workspace: Workspace | undefined;
+  let apiRequest = request;
+  if (path.startsWith('/v/')) {
+    if (!match) fail(404, '투표 주소가 없습니다.', 'not_found');
+    workspace = await getWorkspaceBySlug(env, match[1]) ?? fail(404, '투표 주소가 없습니다.', 'not_found');
+    if (!match[2]) return assetResponse(request, env, path);
+    apiRequest = withPath(request, match[2]);
+    if (match[2].startsWith('/api/members/')) fail(404, '요청한 경로가 없습니다.', 'not_found');
+  }
+  const api = new URL(apiRequest.url).pathname;
+  let member: MemberSession | null = null;
+  if (api.startsWith('/api/admin/')) {
+    if (!['GET', 'HEAD'].includes(request.method)) sameOrigin(request);
+    if (api === '/api/admin/login') fail(401, '회원 로그인이 필요합니다.', 'member_login_required');
+    member = await getMemberSession(request, env);
+    if (member?.status !== 'approved') fail(401, '승인된 회원 로그인이 필요합니다.', 'unauthorized');
+    if (workspace && (member.namespace !== workspace.namespace || member.workspaceSlug !== workspace.slug)) fail(403, '다른 회원의 투표를 관리할 수 없습니다.', 'workspace_forbidden');
+    if (!['GET', 'HEAD'].includes(request.method) && request.headers.get('x-member-csrf') !== member.csrfToken) fail(403, '회원 계정이 변경되었습니다. 화면을 새로 고쳐 주세요.', 'csrf');
+    workspace ??= { slug: member.workspaceSlug, namespace: member.namespace };
+    if (api === '/api/admin/password' || api === '/api/admin/session') {
+      return await handleMemberRequest(withPath(request, api.replace('/api/admin/', '/api/members/')), env, ctx)
+        ?? fail(404, '요청한 경로가 없습니다.', 'not_found');
+    }
+  }
+  if (workspace) {
+    await ensureWorkspace(env, workspace);
+    return route(apiRequest, { ...workspaceEnv(env, workspace), ...(member ? { MEMBER_SESSION: member } : {}) });
+  }
+  return route(request, env);
+}
 function errorResponse(error: unknown) {
   if (error instanceof ApiError) return json({ error: error.message, code: error.code }, error.status);
   const message = error instanceof Error ? error.message : '';
@@ -926,10 +1040,13 @@ function errorResponse(error: unknown) {
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
     let response: Response;
     const path = new URL(request.url).pathname;
-    try { response = await route(request, env); }
+    try {
+      if (env.MEMBERSHIP_REQUIRED === 'true' && !env.SUPERADMIN_EMAIL?.trim()) fail(503, '회원 서비스 설정을 확인해 주세요.', 'members_unconfigured');
+      response = await (env.SUPERADMIN_EMAIL ? memberRoute(request, env, ctx) : route(request, env));
+    }
     catch (error) { response = errorResponse(error); }
     const headers = new Headers(response.headers);
     headers.set('X-Content-Type-Options', 'nosniff');
@@ -938,7 +1055,10 @@ export default {
     headers.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
     headers.set('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
     if (new URL(request.url).protocol === 'https:') headers.set('Strict-Transport-Security', 'max-age=31536000');
-    if (path.startsWith('/api/')) { headers.set('Cache-Control','no-store'); headers.set('Pragma','no-cache'); }
+    if (path.startsWith('/api/') || /^\/v\/[^/]+\/api\//.test(path)) { headers.set('Cache-Control','no-store'); headers.set('Pragma','no-cache'); }
     return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+  },
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
+    if (env.SUPERADMIN_EMAIL) ctx.waitUntil(retryPendingNotices(env));
   }
 };
