@@ -1,5 +1,6 @@
 import type { Env } from './index';
 import type { MemberSession } from './members';
+import { ownerPollSlug } from './members';
 import { ensureWorkspace, workspaceDatabase, workspaceDeleted, workspaceSql, type Workspace } from './workspaces';
 
 type PollRow = { slug:string; namespace:string|null; creation_title:string; initialized:number; deleted_at?:number|null };
@@ -51,7 +52,8 @@ export async function memberPolls(request:Request,env:Env,member:MemberSession,r
     const details=queries.length?(await env.DB.batch(queries)).flatMap(result=>result.results as {slug:string;title:string;status:string}[]):[];
     const bySlug=new Map(details.map(poll=>[poll.slug,poll]));
     const deleted=new Set((await env.DB.prepare('SELECT slug FROM member_polls WHERE member_id=? AND deleted_at IS NOT NULL').bind(member.id).all<{slug:string}>()).results.map(row=>row.slug));
-    return json({polls:rows.results.filter(row=>!deleted.has(row.slug)).map(row=>{const poll=bySlug.get(row.slug);if(!poll)throw new Error('Missing poll workspace');return poll;})});
+    const ownerSlug=member.role==='owner'?(member.publicWorkspaceSlug??(member.workspaceSlug==='owner'?await ownerPollSlug(env):member.workspaceSlug)):null;
+    return json({polls:rows.results.filter(row=>!deleted.has(row.slug)).map(row=>{const poll=bySlug.get(row.slug);if(!poll)throw new Error('Missing poll workspace');return row.slug==='owner'?{...poll,slug:ownerSlug}:poll;})});
   }
   if(request.method!=='POST')return json({error:'요청을 찾을 수 없습니다.',code:'not_found'},404);
   const data=await readBody();

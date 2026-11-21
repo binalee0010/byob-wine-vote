@@ -67,6 +67,7 @@ export function progressFieldKey(activity: Pick<Activity, 'id' | 'revision'>, fi
 export function progressServerFields(state: SettingsState) {
   const fields: Record<string, string> = {
     'event:title': state.event.title,
+    'event:memo': state.event.memo ?? '',
   };
   for (const activity of state.activities) {
     fields[progressFieldKey(activity, 'title')] = activity.title;
@@ -114,11 +115,12 @@ export function progressSettingsUpdate(state: SettingsState, server: Record<stri
   const patch: AdminSettingsPatch = {};
   const event: NonNullable<AdminSettingsPatch['event']> = {};
   if (changes['event:title'] !== undefined) event.title = changes['event:title'];
+  if (changes['event:memo'] !== undefined) event.memo = changes['event:memo'];
   if (Object.keys(event).length) patch.event = event;
   const activities = state.activities.flatMap<NonNullable<AdminSettingsPatch['activities']>[number]>(activity => {
     const title = changes[progressFieldKey(activity, 'title')];
     const resultVisibility = changes[progressFieldKey(activity, 'resultVisibility')];
-    if (resultVisibility !== undefined && resultVisibility !== 'private' && resultVisibility !== 'public') throw new Error('결과 공개 설정을 확인해 주세요.');
+    if (resultVisibility !== undefined && resultVisibility !== 'private' && resultVisibility !== 'participants' && resultVisibility !== 'public') throw new Error('결과 공개 설정을 확인해 주세요.');
     const methodKey = progressFieldKey(activity, 'votingMethod');
     const countKey = progressFieldKey(activity, 'rankCount');
     const votingMethod = changes[methodKey] as VotingMethod | undefined;

@@ -1,8 +1,9 @@
 import type { Env } from './index';
 import type { MemberSession } from './members';
+import { ownerPollSlug } from './members';
 import { ensureWorkspace, workspaceDatabase, workspaceDeleted, type Workspace } from './workspaces';
 
-const tables = ['event','answers','sessions','participant_entries','participants','activities','vote_history','candidates','candidate_photo_cleanup','login_attempts','admin_credentials','admin_bootstrap_history'];
+const tables = ['event','answers','sessions','participant_entries','participant_round_entries','participants','activities','vote_history','candidates','candidate_photo_cleanup','login_attempts','admin_credentials','admin_bootstrap_history'];
 const json = (value:unknown,status=200) => Response.json(value,{status});
 const missing = () => json({error:'투표를 찾을 수 없습니다.',code:'not_found'},404);
 
@@ -28,6 +29,9 @@ export async function retryDeletedPollPhotos(env:Env) {
 export async function deleteMemberPoll(env:Env,member:MemberSession,slug:string,data:Record<string,unknown>) {
   if(member.status!=='approved')return json({error:'승인된 회원 로그인이 필요합니다.',code:'unauthorized'},403);
   if(data.confirm!=='delete-poll')return json({error:'투표 삭제를 확인해 주세요.',code:'invalid_request'},400);
+  const publicSlug=slug;
+  if(slug==='owner')return missing();
+  if(member.role==='owner' && slug===await ownerPollSlug(env))slug='owner';
   const row=await env.DB.prepare('SELECT slug,namespace,deleted_at FROM member_polls WHERE slug=? AND member_id=?').bind(slug,member.id).first<Workspace & {deleted_at:number|null}>();
   if(!row)return missing();
   if(row.namespace && row.deleted_at===null)await ensureWorkspace(env,row);
@@ -38,7 +42,7 @@ export async function deleteMemberPoll(env:Env,member:MemberSession,slug:string,
         OR (m.role='owner' AND EXISTS(SELECT 1 FROM admin_credentials WHERE id=1 AND version=s.credential_version))))`;
   if(row.deleted_at!==null){
     if(!await env.DB.prepare(`SELECT 1 WHERE ${active}`).bind(member.id,member.tokenHash,now).first())return json({error:'회원 로그인이 필요합니다.',code:'unauthorized'},401);
-    return json({ok:true,slug});
+    return json({ok:true,slug:publicSlug});
   }
   const authorize=()=>env.DB.prepare(`UPDATE member_polls SET deleted_at=coalesce(deleted_at,?),creation_title='',cleanup_pending=CASE WHEN namespace IS NULL THEN 0 ELSE 1 END,cleanup_version=cleanup_version+1
     WHERE slug=? AND member_id=? AND ${active} RETURNING slug`).bind(now,slug,member.id,member.id,member.tokenHash,now);
@@ -69,5 +73,5 @@ export async function deleteMemberPoll(env:Env,member:MemberSession,slug:string,
   if(!valid)return json({error:'회원 로그인이 필요합니다.',code:'unauthorized'},401);
   if(!await workspaceDeleted(env,row))return missing();
   try{await cleanupPhotos(env,row);}catch{/* The scheduled sweep retries deleted namespaces. */}
-  return json({ok:true,slug});
+  return json({ok:true,slug:publicSlug});
 }

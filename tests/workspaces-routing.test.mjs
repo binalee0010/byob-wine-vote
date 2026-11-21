@@ -36,7 +36,7 @@ async function approve(owner, member, account) {
   assert.equal((await member('/api/members/session')).status, 200);
 }
 
-test('approved members isolate ballots, photos, admin routes, archives, reset and cookies in one D1 database', async () => {
+test('approved members isolate ballots, photos, admin routes, live results, reset and cookies in one D1 database', async () => {
   const local = await createApp({ bindings, publicOrigin: 'https://canonical.example.test' });
   try {
     const owner = memberClient(local.mf), a = memberClient(local.mf), b = memberClient(local.mf), rejected = memberClient(local.mf);
@@ -65,7 +65,7 @@ test('approved members isolate ballots, photos, admin routes, archives, reset an
     assert.equal((await staleATab('/api/admin/candidates', 'POST', {}, { headers: { 'x-member-csrf': '' } })).status, 403);
     assert.equal((await state(a)).participantUrl, `https://canonical.example.test/v/${aa.workspaceSlug}`);
     assert.equal((await state(b)).candidates.length, 0);
-    assert.equal((await state(owner)).participantUrl, 'https://canonical.example.test/v/owner');
+    assert.equal((await state(owner)).participantUrl, `https://canonical.example.test/v/${(await owner('/api/members/session')).body.member.workspaceSlug}`);
     const pa = await participant(pathA + '/session', 'POST', { name: 'Same name' });
     const pb = await participant(pathB + '/session', 'POST', { name: 'Same name' });
     assert.equal(pa.status, 200); assert.equal(pb.status, 200);
@@ -73,7 +73,7 @@ test('approved members isolate ballots, photos, admin routes, archives, reset an
     assert.notEqual(pa.headers.get('set-cookie').split('=')[0], pb.headers.get('set-cookie').split('=')[0]);
     assert.equal((await participant(pathA + '/bootstrap')).body.participant.id, pa.body.participant.id);
     assert.equal((await participant(pathB + '/bootstrap')).body.participant.id, pb.body.participant.id);
-    assert.equal((await participant('/api/bootstrap')).body.participant, null);
+    assert.equal((await participant('/api/bootstrap')).status, 404);
     const ca = await a('/api/admin/candidates', 'POST', photo('A private wine'));
     const cb = await b('/api/admin/candidates', 'POST', photo('B private wine'));
     assert.equal(ca.status, 200, JSON.stringify(ca.body)); assert.equal(cb.status, 200, JSON.stringify(cb.body));
@@ -99,19 +99,11 @@ test('approved members isolate ballots, photos, admin routes, archives, reset an
     assert.equal((await anonymous(pathA + `/photos/${cb.body.candidate.id}`)).status, 404);
     assert.equal((await anonymous(cb.body.candidate.photoUrl)).status, 200);
     assert.equal((await a('/api/admin/activities/byob/state', 'POST', { action: 'close', revision: 0 })).status, 200);
-    const saved = await a('/api/admin/history', 'POST', expected(await state(a)));
-    assert.equal(saved.status, 200);
-    const archive = await a('/api/admin/history/' + saved.body.id);
-    const archivedPhoto = archive.body.record.rows[0].photoUrl;
-    assert.equal(archivedPhoto, `${pathA}/admin/history/${saved.body.id}/photos/${ca.body.candidate.id}`);
-    assert.equal((await a(archivedPhoto)).status, 200);
-    assert.equal((await b('/api/admin/history/' + saved.body.id)).status, 404);
-    assert.equal((await b(archivedPhoto)).status, 403);
+    assert.equal((await a('/api/admin/history', 'POST', expected(await state(a)))).status, 404);
     const beforeB = await state(b), beforeOwner = await state(owner);
     assert.equal((await a('/api/admin/reset-all', 'POST', { ...expected(await state(a)), confirm: 'reset-all' })).status, 200);
     assert.equal((await state(a)).candidates.length, 0);
     assert.equal((await state(a)).participants.length, 0);
-    assert.equal((await a(archivedPhoto)).status, 200);
     assert.equal((await participant(pathA + '/bootstrap')).body.participant, null);
     assert.equal((await participant(pathB + '/bootstrap')).body.participant.id, pb.body.participant.id);
     assert.deepEqual(await state(b), beforeB); assert.deepEqual(await state(owner), beforeOwner);
@@ -185,13 +177,15 @@ test('legacy owner tables, existing participant cookie, credentials, archives an
     const before = await dump();
     const schema = (await local.db.prepare("SELECT name,sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name").all()).results;
     const person = client(local.mf, `${legacyCookies.PARTICIPANT_SESSION_COOKIE}=${oldPerson}`), oldStandalone = client(local.mf, `${legacyCookies.ADMIN_SESSION_COOKIE}=${oldAdmin}`);
-    assert.equal((await person('/api/bootstrap')).body.participant.id, 'old-person');
-    assert.equal((await person('/v/owner/api/bootstrap')).body.participant.id, 'old-person');
+    const ownerSlug=(await local.db.prepare('SELECT slug FROM owner_poll_link WHERE id=1').first()).slug,ownerPath=`/v/${ownerSlug}/api`;
+    assert.equal((await person('/api/bootstrap')).status, 404);
+    assert.equal((await person('/v/owner/api/bootstrap')).status, 404);
+    assert.equal((await person(ownerPath+'/bootstrap')).body.participant.id, 'old-person');
     assert.equal((await oldStandalone('/api/admin/state')).status, 401);
     const owner = memberClient(local.mf); await loginOwner(owner);
-    assert.equal((await state(owner)).currentHistoryId, 'old-history');
-    assert.equal((await owner('/api/admin/history/old-history')).body.record.rows[0].name, 'Preserved wine');
-    assert.equal((await person('/v/owner/api/photos/old-wine')).status, 200);
+    assert.equal(Object.hasOwn(await state(owner), 'currentHistoryId'), false);
+    assert.equal((await owner('/api/admin/history/old-history')).status, 404);
+    assert.equal((await person(ownerPath+'/photos/old-wine')).status, 200);
     const member = memberClient(local.mf), account = await signup(member, 'legacy-isolated@example.test');
     await approve(owner, member, account);
     assert.equal((await member('/api/admin/candidates', 'POST', photo('New member wine'))).status, 200);
@@ -200,8 +194,8 @@ test('legacy owner tables, existing participant cookie, credentials, archives an
     const originalNames = new Set(schema.map(row => row.name));
     assert.deepEqual((await local.db.prepare("SELECT name,sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name").all()).results.filter(row => originalNames.has(row.name)), schema);
     assert.deepEqual(Buffer.from(await (await bucket.get('candidates/old-photo')).arrayBuffer()), PNG);
-    assert.equal((await person('/api/bootstrap')).body.participant.submitted.byob, true);
-    assert.equal((await person('/v/owner/api/bootstrap')).body.participant.submitted.byob, true);
+    assert.equal((await person('/api/bootstrap')).status, 404);
+    assert.equal((await person(ownerPath+'/bootstrap')).body.participant.submitted.byob, true);
     const secondOwner = memberClient(local.mf); await loginOwner(secondOwner);
     const memberSessions = (await local.db.prepare('SELECT * FROM member_sessions WHERE member_id=? ORDER BY token_hash').bind(account.id).all()).results;
     const memberAdmins = (await local.db.prepare(`SELECT * FROM m_${account.id}_sessions ORDER BY token_hash`).all()).results;
@@ -214,7 +208,7 @@ test('legacy owner tables, existing participant cookie, credentials, archives an
     assert.deepEqual((await local.db.prepare(`SELECT * FROM m_${account.id}_sessions ORDER BY token_hash`).all()).results, memberAdmins);
     assert.deepEqual((await local.db.prepare("SELECT * FROM sessions WHERE role='participant' ORDER BY token_hash").all()).results, participantSessions);
     assert.equal((await state(member)).candidates.length, 0);
-    assert.equal((await person('/v/owner/api/bootstrap')).body.participant.id, 'old-person');
+    assert.equal((await person(ownerPath+'/bootstrap')).body.participant.id, 'old-person');
     assert.deepEqual((await local.db.prepare('PRAGMA foreign_key_check').all()).results, []);
   } finally { await local.mf.dispose(); }
 });

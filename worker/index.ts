@@ -24,13 +24,11 @@ export interface Env {
 type ActivityId = 'byob';
 type VotingMethod = 'winner' | 'top2' | 'full';
 type ParticipationMode = 'open' | 'restricted';
-type Activity = { id: ActivityId; title: string; status: 'waiting' | 'open' | 'closed'; published: number; publish_on_close: number; started_at: string | null; revision: number; results_locked: number; voting_method?: VotingMethod; rank_points?: string };
+type ResultVisibility = 'private' | 'participants' | 'public';
+type Activity = { id: ActivityId; title: string; status: 'waiting' | 'open' | 'closed'; published: number; publish_on_close: number; started_at: string | null; revision: number; results_locked: number; result_visibility: ResultVisibility; voting_method?: VotingMethod; rank_points?: string };
 type Participant = { id: string; name: string };
 type Candidate = { id: string; number: number; name: string; description?: string; object_key: string; content_type: string; request_id: string };
 type RankedCandidate = Candidate & { score: number };
-type HistoryCandidate = Omit<RankedCandidate, 'request_id'>;
-type HistorySummary = { title: string; activityTitle: string; startedAt: string; votingMethod: VotingMethod; rankPoints: number[]; ballotCount: number };
-type HistoryRow = { id: string; saved_at: string; snapshot: string };
 type Session = { role: 'admin' | 'participant'; participant_id: string | null; token_hash: string };
 const ids: ActivityId[] = ['byob'];
 const encoder = new TextEncoder();
@@ -93,11 +91,14 @@ function publicVotingMethod(method?: VotingMethod) { return method === 'top2' ? 
 function rankPoints(a: Activity): number[] { return JSON.parse(a.rank_points ?? '[3,1]'); }
 function activityPublic(a: Activity) {
   return { id: a.id, title: a.title, status: a.status, published: Boolean(a.published),
-    started: a.started_at !== null, revision: a.revision,
+    started: a.started_at !== null, revision: a.revision, resultVisibility: a.result_visibility,
     votingMethod: publicVotingMethod(a.voting_method), rankPoints: rankPoints(a) };
 }
-function apiPath(env: Env, path: string) { return `${env.WORKSPACE ? `/v/${env.WORKSPACE.slug}` : ''}/api${path}`; }
-function candidatePublic(c: Pick<Candidate, 'id' | 'number' | 'name' | 'description' | 'object_key'>, env: Env) { return { id: c.id, number: c.number, name: c.name, description: c.description ?? '', photoUrl: c.object_key ? apiPath(env, `/photos/${c.id}`) : null }; }
+function apiPath(env: Env, path: string) { return `${env.WORKSPACE ? `/v/${env.WORKSPACE.publicSlug ?? env.WORKSPACE.slug}` : ''}/api${path}`; }
+function candidatePublic(c: Pick<Candidate, 'id' | 'number' | 'name' | 'description' | 'object_key'>, env: Env) {
+  const version=/\/photos\/([a-f0-9]{32})\/[A-Za-z0-9_-]{8,80}$/.exec(c.object_key)?.[1];
+  return { id: c.id, number: c.number, name: c.name, description: c.description ?? '', photoUrl: c.object_key ? apiPath(env, `/photos/${c.id}`)+(version?`?v=${version}`:'') : null };
+}
 async function body(request: Request, max = 32768): Promise<Record<string, unknown>> {
   if (!request.headers.get('content-type')?.startsWith('application/json')) fail(415, 'JSON 요청이 필요합니다.');
   const raw = await boundedBody(request, max);
@@ -255,104 +256,17 @@ const rankedCandidateSql = `SELECT c.*,coalesce(tally.score,0) AS score FROM can
     JOIN activities activity ON activity.id=a.activity_id
     WHERE a.activity_id='byob' GROUP BY ballot.value
   ) tally ON c.id=tally.candidate_id ORDER BY c.number,c.id`;
-function rankedResults(rows: HistoryCandidate[], method: VotingMethod, env: Env) {
+function rankedResults(rows: RankedCandidate[], method: VotingMethod, env: Env) {
   const ranked = rankRows(rows, row => row.score, true);
   return ranked.map(c => ({ ...candidatePublic(c, env), candidateId: c.id, rank: c.rank, ...(method === 'winner' ? { votes: c.score } : { points: c.score }) }));
-}
-async function historySummary(row: HistoryRow, summary: HistorySummary) {
-  const { title, activityTitle, startedAt, votingMethod, rankPoints, ballotCount } = summary;
-  return { id: row.id, version: await digest(row.snapshot), title, activityTitle, startedAt, savedAt: row.saved_at, votingMethod: publicVotingMethod(votingMethod), rankPoints, ballotCount };
-}
-async function historyList(env: Env) {
-  const records = await env.DB.prepare('SELECT id,saved_at,snapshot FROM vote_history ORDER BY revision DESC').all<HistoryRow>();
-  return json({ records: await Promise.all(records.results.map(row => historySummary(row, JSON.parse(row.snapshot)))) });
-}
-async function historyRow(env: Env, id: string) {
-  return await env.DB.prepare('SELECT id,saved_at,snapshot FROM vote_history WHERE id=?').bind(id).first<HistoryRow>()
-    ?? fail(404, '저장한 투표 기록이 없습니다.');
-}
-async function historyDetail(env: Env, id: string) {
-  const row = await historyRow(env, id);
-  const snapshot = JSON.parse(row.snapshot) as HistorySummary & { rows: HistoryCandidate[] };
-  return json({ record: {
-    ...await historySummary(row, snapshot),
-    rows: rankedResults(snapshot.rows, snapshot.votingMethod, env).map(candidate => ({
-      ...candidate, photoUrl: candidate.photoUrl ? apiPath(env, `/admin/history/${row.id}/photos/${candidate.id}`) : null
-    }))
-  } });
-}
-async function changeHistory(request: Request, env: Env, admin: Session, id: string) {
-  const data = await body(request, 1024 * 1024);
-  if (typeof data.expectedVersion !== 'string' || !/^[a-f0-9]{64}$/.test(data.expectedVersion)) fail(400, '투표 기록 버전을 확인해 주세요.');
-  const row = await historyRow(env, id);
-  if (await digest(row.snapshot) !== data.expectedVersion) fail(409, '투표 기록이 바뀌었습니다. 다시 열어 확인해 주세요.', 'history_changed');
-  let changed: D1Result;
-  if (request.method === 'DELETE') {
-    if (data.confirm !== 'delete-history') fail(400, '투표 기록 삭제를 확인해 주세요.');
-    // Archive deletion intentionally leaves photo objects and all current voting data intact.
-    changed = await env.DB.prepare(`DELETE FROM vote_history WHERE id=? AND snapshot=? AND ${activeAdmin(env)}`)
-      .bind(id, row.snapshot, admin.token_hash, Date.now()).run();
-  } else {
-    const title = text(data.title, '모임 이름', 160);
-    const snapshot = JSON.parse(row.snapshot) as HistorySummary & { rows: HistoryCandidate[] };
-    if (!Array.isArray(data.names) || data.names.length > snapshot.rows.length) fail(400, '와인 이름을 확인해 주세요.');
-    const names = new Map<string, {name:string;description?:string}>();
-    for (const entry of data.names) {
-      if (!entry || typeof entry !== 'object' || typeof entry.id !== 'string' || names.has(entry.id)
-        || !snapshot.rows.some(candidate => candidate.id === entry.id)) fail(400, '기록에 있는 와인을 확인해 주세요.');
-      const original = snapshot.rows.find(candidate => candidate.id === entry.id)!;
-      names.set(entry.id, {name:entry.name === original.name ? original.name : text(entry.name, '와인 이름', 160),...(entry.description === undefined ? {} : {description:entry.description === original.description ? original.description : text(entry.description, '와인 설명', 2000, false)})});
-    }
-    snapshot.title = title;
-    snapshot.rows = snapshot.rows.map(candidate => names.has(candidate.id) ? { ...candidate, ...names.get(candidate.id)! } : candidate);
-    changed = await env.DB.prepare(`UPDATE vote_history SET snapshot=? WHERE id=? AND snapshot=? AND ${activeAdmin(env)}`)
-      .bind(JSON.stringify(snapshot), id, row.snapshot, admin.token_hash, Date.now()).run();
-  }
-  if (!changed.meta.changes) {
-    await requireAdmin(request, env);
-    await historyRow(env, id);
-    fail(409, '투표 기록이 바뀌었습니다. 다시 열어 확인해 주세요.', 'history_changed');
-  }
-  return request.method === 'DELETE' ? ok() : historyDetail(env, id);
-}
-async function historyPhoto(env: Env, id: string, candidateId: string) {
-  const candidate = await env.DB.prepare(`SELECT json_extract(c.value,'$.object_key') AS object_key,
-    json_extract(c.value,'$.content_type') AS content_type FROM vote_history h CROSS JOIN json_each(h.snapshot,'$.rows') c
-    WHERE h.id=? AND json_extract(c.value,'$.id')=?`).bind(id, candidateId).first<Pick<Candidate, 'object_key' | 'content_type'>>();
-  if (!candidate?.object_key) fail(404, '사진이 없습니다.');
-  const object = await env.PHOTOS.get(candidate.object_key);
-  if (!object) fail(404, '사진이 없습니다.');
-  return new Response(object.body, { headers: { 'Content-Type': candidate.content_type, 'Content-Disposition': 'inline' } });
-}
-async function saveHistory(request: Request, env: Env, admin: Session) {
-  const data = await body(request);
-  const revision = revisionNumber(data.expectedRevision), rosterRevision = revisionNumber(data.expectedRosterRevision);
-  const id = crypto.randomUUID();
-  const saved = await env.DB.prepare(`INSERT INTO vote_history(id,revision,saved_at,snapshot)
-    SELECT ?,a.revision,?,json_object(
-      'title',e.title,'activityTitle',a.title,'startedAt',a.started_at,'votingMethod',a.voting_method,
-      'rankPoints',json(a.rank_points),'ballotCount',(SELECT count(*) FROM answers WHERE activity_id='byob'),
-      'rows',(SELECT json_group_array(json_object('id',c.id,'number',c.number,'name',c.name,'description',c.description,
-        'object_key',c.object_key,'content_type',c.content_type,'score',c.score)) FROM (${rankedCandidateSql}) c)
-    )
-    FROM activities a CROSS JOIN event e WHERE a.id='byob' AND e.id=1 AND a.status='closed'
-      AND a.revision=? AND e.roster_revision=? AND ${activeAdmin(env)}
-    ON CONFLICT(revision) DO NOTHING RETURNING id`)
-    .bind(id, new Date().toISOString(), revision, rosterRevision, admin.token_hash, Date.now()).first<{ id: string }>();
-  if (saved) return json({ ok: true, id: saved.id, reused: false });
-  await requireAdmin(request, env);
-  const current = await env.DB.prepare(`SELECT a.revision,a.status,e.roster_revision,h.id
-    FROM activities a CROSS JOIN event e LEFT JOIN vote_history h ON h.revision=a.revision
-    WHERE a.id='byob' AND e.id=1`).first<{ revision: number; status: string; roster_revision: number; id: string | null }>();
-  if (current?.revision !== revision) fail(409, '이벤트 회차가 바뀌었습니다. 화면을 새로 고쳐 주세요.', 'revision_changed');
-  if (current.roster_revision !== rosterRevision) fail(409, '참여 현황이 바뀌었습니다. 다시 확인해 주세요.', 'roster_changed');
-  if (current.status === 'closed' && current.id) return json({ ok: true, id: current.id, reused: true });
-  return fail(409, '마감한 뒤 투표 기록을 저장할 수 있습니다.', 'history_not_closed');
 }
 async function bootstrap(request: Request, env: Env) {
   const [all, event, participantSession] = await Promise.all([
     activityRows(env).all<Activity>(), eventInfo(env), session(request, env, 'participant')
   ]);
+  if (participantSession?.participant_id) await env.DB.prepare(`INSERT OR IGNORE INTO participant_round_entries(participant_id,revision)
+    SELECT ?,revision FROM activities WHERE id='byob' AND status IN ('waiting','open') AND ${activeParticipant} AND ${activePoll(env)}`)
+    .bind(participantSession.participant_id, participantSession.token_hash, participantSession.participant_id, Date.now()).run();
   let participant: (Participant & { submitted: { byob: boolean } }) | null = null;
   if (participantSession?.participant_id) {
     const person = await env.DB.prepare('SELECT id,name FROM participants WHERE id=?')
@@ -409,18 +323,32 @@ async function submit(request: Request, env: Env, id: ActivityId) {
   }
   return ok();
 }
-async function results(env: Env, id: ActivityId) {
+async function resultAccess(request: Request, env: Env, a: Activity): Promise<string | null> {
+  if (a.status !== 'closed' || !a.published || a.result_visibility === 'private') fail(403, '결과가 아직 공개되지 않았습니다.', 'results_unpublished');
+  if (a.result_visibility === 'public') return null;
+  const participant = await session(request, env, 'participant');
+  if (!participant?.participant_id || !await env.DB.prepare(`SELECT 1 FROM participant_round_entries e
+    JOIN participants p ON p.id=e.participant_id JOIN activities a ON a.id='byob' AND a.revision=e.revision
+    WHERE e.participant_id=? AND a.revision=? AND a.status='closed' AND a.published=1 AND a.result_visibility='participants'
+      AND ${activeParticipant} AND ${activePoll(env)}`)
+    .bind(participant.participant_id, a.revision, participant.token_hash, participant.participant_id, Date.now()).first()) {
+    fail(403, '이 투표에 참여한 닉네임으로 입장해 주세요.', 'participant_required');
+  }
+  return participant.participant_id;
+}
+async function results(request: Request, env: Env, id: ActivityId) {
   const initial = await activity(env, id);
-  if (!initial.published) fail(403, '결과가 아직 공개되지 않았습니다.', 'results_unpublished');
+  await resultAccess(request, env, initial);
   const rows = (await env.DB.prepare(rankedCandidateSql).all<RankedCandidate>()).results;
   const current = await activity(env, id);
-  if (current.revision !== initial.revision || !current.published) fail(403, '결과가 아직 공개되지 않았습니다.', 'results_unpublished');
-  return json({ id, title: initial.title, mode: 'ranked-byob', votingMethod: publicVotingMethod(initial.voting_method),
-    revision: initial.revision, rows: rankedResults(rows, initial.voting_method ?? 'full', env) });
+  if (current.revision !== initial.revision) fail(403, '결과가 아직 공개되지 않았습니다.', 'results_unpublished');
+  const participantId = await resultAccess(request, env, current);
+  return json({ id, title: current.title, mode: 'ranked-byob', votingMethod: publicVotingMethod(current.voting_method),
+    revision: current.revision, ...(participantId ? { participantId } : {}), rows: rankedResults(rows, current.voting_method ?? 'full', env) });
 }
 function participantUrl(request: Request, env: Env) {
   const configured = env.PUBLIC_ORIGIN;
-  const path = env.WORKSPACE ? `/v/${env.WORKSPACE.slug}` : '/';
+  const path = env.WORKSPACE ? `/v/${env.WORKSPACE.publicSlug ?? env.WORKSPACE.slug}` : '/';
   if (!configured) return new URL(path, request.url).href;
   try {
     const url = new URL(configured);
@@ -430,22 +358,21 @@ function participantUrl(request: Request, env: Env) {
 }
 async function adminState(request: Request, env: Env) {
   const [event, activities, participants, candidateRows, cleanup, submissions] = await env.DB.batch([
-    env.DB.prepare("SELECT title,starts_at AS startsAt,timezone,'open' AS participationMode,roster_revision AS rosterRevision FROM event WHERE id=1"),
-    env.DB.prepare("SELECT a.*,h.id AS current_history_id FROM activities a LEFT JOIN vote_history h ON h.revision=a.revision WHERE a.id='byob'"),
+    env.DB.prepare("SELECT title,memo,starts_at AS startsAt,timezone,'open' AS participationMode,roster_revision AS rosterRevision FROM event WHERE id=1"),
+    env.DB.prepare("SELECT * FROM activities WHERE id='byob'"),
     env.DB.prepare("SELECT p.id,p.name,EXISTS(SELECT 1 FROM answers a WHERE a.activity_id='byob' AND a.participant_id=p.id) AS submitted FROM participants p JOIN participant_entries e ON e.participant_id=p.id ORDER BY p.name,p.id"),
     env.DB.prepare(rankedCandidateSql), candidatePhotoCleanupCount(env), env.DB.prepare("SELECT count(*) AS count FROM answers WHERE activity_id='byob'")
   ]);
-  const { rosterRevision, ...metadata } = event.results[0] as { title: string; startsAt: string; timezone: string; participationMode: ParticipationMode; rosterRevision: number };
-  const activityList = activities.results as (Activity & { current_history_id: string | null })[];
+  const { rosterRevision, ...metadata } = event.results[0] as { title: string; memo: string; startsAt: string; timezone: string; participationMode: ParticipationMode; rosterRevision: number };
+  const activityList = activities.results as Activity[];
   return json({
     mode: 'ranked-byob', event: metadata, rosterRevision, participantUrl: participantUrl(request, env),
     photoCleanupPending: (cleanup.results[0] as { count: number }).count,
-    activities: activityList.map(a => ({ ...activityPublic(a), resultVisibility: a.publish_on_close ? 'public' : 'private', resultsLocked: Boolean(a.results_locked) })),
+    activities: activityList.map(a => ({ ...activityPublic(a), resultsLocked: Boolean(a.results_locked) })),
     participants: (participants.results as {id:string;name:string;submitted:number}[]).map(person => ({id:person.id,name:person.name,submitted:{byob:Boolean(person.submitted)}})),
     submittedCount: (submissions.results[0] as {count:number}).count,
     answers: {byob:(participants.results as {id:string;submitted:number}[]).filter(person => person.submitted).map(person => ({participantId:person.id}))},
     candidates: (candidateRows.results as Candidate[]).map(c => candidatePublic(c, env)),
-    currentHistoryId: activityList[0]?.current_history_id ?? null,
     byobResults: rankedResults(candidateRows.results as RankedCandidate[], activityList[0]?.voting_method ?? 'full', env)
   });
 }
@@ -507,12 +434,16 @@ async function configure(request: Request, env: Env, id: ActivityId, admin: Sess
 }
 async function updateSettings(request: Request, env: Env, admin: Session) {
   const data = await body(request);
-  let title: string | null = null, startsAt: string | null = null;
+  let title: string | null = null, startsAt: string | null = null, memo: string | null = null;
   if (data.event !== undefined) {
     if (!data.event || typeof data.event !== 'object' || Array.isArray(data.event)) fail(400, '행사 설정을 확인해 주세요.');
     const event = data.event as Record<string, unknown>;
     if (event.timezone !== undefined && event.timezone !== 'Asia/Seoul') fail(400, '한국 시간의 유효한 행사 일시를 입력해 주세요.');
     if (event.title !== undefined) title = text(event.title, '행사명', 160);
+    if (event.memo !== undefined) {
+      if (typeof event.memo !== 'string' || event.memo.length > 2000 || /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/u.test(event.memo)) fail(400, '메모 내용을 확인해 주세요.');
+      memo = event.memo;
+    }
     if (event.startsAt !== undefined) startsAt = eventStartTime(event.startsAt);
     if (event.participationMode !== undefined) {
       if (event.participationMode !== 'open') fail(400, '이름을 입력해 자유롭게 참여하는 투표입니다.', 'invalid_participation_mode');
@@ -527,22 +458,22 @@ async function updateSettings(request: Request, env: Env, admin: Session) {
     const id = activityId(entry.id);
     const settings = activitySettings(entry);
     const visibility = entry.resultVisibility;
-    if (visibility !== undefined && visibility !== 'private' && visibility !== 'public') {
+    if (visibility !== undefined && visibility !== 'private' && visibility !== 'participants' && visibility !== 'public') {
       fail(400, '결과 공개 범위를 확인해 주세요.', 'invalid_result_visibility');
     }
-    const publishOnClose = visibility === undefined ? null : Number(visibility === 'public');
+    const publishOnClose = visibility === undefined ? null : Number(visibility !== 'private');
     if (publishOnClose === null && Object.values(settings).every(value => value === null)) fail(400, '저장할 이벤트 설정을 확인해 주세요.');
-    return { id, revision: revisionNumber(entry.revision), publishOnClose, ...settings };
+    return { id, revision: revisionNumber(entry.revision), publishOnClose, resultVisibility: visibility ?? null, ...settings };
   });
   if (new Set(edits.map(edit => edit.id)).size !== edits.length) fail(400, '같은 이벤트가 두 번 포함되어 있습니다.');
-  const saveEvent = title !== null || startsAt !== null;
+  const saveEvent = title !== null || startsAt !== null || memo !== null;
   if (!saveEvent && !edits.length && (data.event as Record<string, unknown> | undefined)?.participationMode === 'open') return ok();
   if (!saveEvent && !edits.length) fail(400, '저장할 설정을 확인해 주세요.');
   const encoded = JSON.stringify(edits);
   const pending = `WITH edits AS MATERIALIZED (
     SELECT json_extract(value,'$.id') AS id,json_extract(value,'$.revision') AS revision,
       json_extract(value,'$.title') AS title,json_extract(value,'$.votingMethod') AS voting_method,
-      json_extract(value,'$.rankPoints') AS rank_points,json_extract(value,'$.publishOnClose') AS publish_on_close FROM json_each(?)
+      json_extract(value,'$.rankPoints') AS rank_points,json_extract(value,'$.publishOnClose') AS publish_on_close,json_extract(value,'$.resultVisibility') AS result_visibility FROM json_each(?)
   )`;
   // Each statement uses the same guard. Accepted updates cannot change any of its conditions.
   const guard = `${activeAdmin(env)} AND EXISTS(SELECT 1 FROM event WHERE id=1) AND NOT EXISTS (
@@ -557,11 +488,12 @@ async function updateSettings(request: Request, env: Env, admin: Session) {
   const now = Date.now();
   const statements: D1PreparedStatement[] = [];
   if (saveEvent) statements.push(env.DB.prepare(`${pending}
-    UPDATE event SET title=coalesce(?,title),starts_at=coalesce(?,starts_at)
+    UPDATE event SET title=coalesce(?,title),starts_at=coalesce(?,starts_at),memo=coalesce(?,memo)
     WHERE id=1 AND ${guard} RETURNING id`)
-    .bind(encoded, title, startsAt, admin.token_hash, now));
+    .bind(encoded, title, startsAt, memo, admin.token_hash, now));
   if (edits.length) statements.push(env.DB.prepare(`${pending}
     UPDATE activities SET title=coalesce((SELECT e.title FROM edits e WHERE e.id=activities.id),title),
+      result_visibility=coalesce((SELECT e.result_visibility FROM edits e WHERE e.id=activities.id),result_visibility),
       publish_on_close=coalesce((SELECT e.publish_on_close FROM edits e WHERE e.id=activities.id),publish_on_close),
       published=CASE WHEN status='closed'
         THEN coalesce((SELECT e.publish_on_close FROM edits e WHERE e.id=activities.id),published) ELSE published END,
@@ -592,7 +524,7 @@ async function changeState(request: Request, env: Env, id: ActivityId, admin: Se
     sql += " AND (voting_method<>'top2' OR (SELECT count(*) FROM candidates)>=json_array_length(rank_points))";
   }
   else if (data.action === 'close') sql = "UPDATE activities SET status='closed',published=publish_on_close WHERE id=? AND published=0 AND status='open'";
-  else if (data.action === 'publish') sql = "UPDATE activities SET published=1 WHERE id=? AND status='closed' AND published=0";
+  else if (data.action === 'publish') sql = "UPDATE activities SET published=1,result_visibility='public' WHERE id=? AND status='closed' AND published=0";
   else return fail(400, '상태 변경을 확인해 주세요.');
   const startedAt = data.action === 'open' ? [new Date().toISOString()] : [];
   const result = await env.DB.prepare(`${sql} AND revision=? AND ${activeAdmin(env)}`)
@@ -720,9 +652,7 @@ async function addCandidate(request: Request, env: Env, admin: Session) {
     // A failed response can follow a committed INSERT; preserve its object on ambiguous DB failures.
     if (key) {
       try {
-        const committed = await env.DB.prepare(`SELECT 1 FROM candidates WHERE object_key=?
-          UNION ALL SELECT 1 FROM vote_history h CROSS JOIN json_each(h.snapshot,'$.rows') c
-          WHERE json_extract(c.value,'$.object_key')=? LIMIT 1`).bind(key, key).first();
+        const committed = await env.DB.prepare('SELECT 1 FROM candidates WHERE object_key=?').bind(key).first();
         if (!committed) {
           try { await env.PHOTOS.delete(key); }
           catch {
@@ -731,6 +661,49 @@ async function addCandidate(request: Request, env: Env, admin: Session) {
         }
       } catch { /* Preserve the object until reconciliation is possible. */ }
     }
+    throw error;
+  }
+}
+async function replaceCandidatePhoto(request:Request,env:Env,id:string,admin:Session) {
+  const contentType=request.headers.get('content-type')??'';
+  if(contentType.split(';',1)[0].trim().toLowerCase()!=='multipart/form-data')fail(415,'사진 요청의 형식을 확인해 주세요.');
+  const bytes=await boundedBody(request,MAX_PHOTO+16384);
+  let form:FormData;
+  try{form=await new Request(request.url,{method:'POST',headers:{'Content-Type':contentType},body:bytes.buffer as ArrayBuffer}).formData();}
+  catch{return fail(400,'사진 요청을 확인해 주세요.');}
+  const round=form.get('revision');if(typeof round!=='string' || !/^\d+$/.test(round))fail(400,'회차 정보를 확인해 주세요.');
+  const revision=revisionNumber(Number(round)),requestId=text(form.get('requestId'),'요청 ID',80),expected=form.get('expectedPhotoUrl'),file=form.get('file');
+  if(!/^[A-Za-z0-9_-]{8,80}$/.test(requestId) || typeof expected!=='string' || expected.length>512)fail(400,'사진 변경 정보를 확인해 주세요.');
+  if(!(file instanceof File) || !file.size || file.size>MAX_PHOTO)fail(413,'사진은 5MB 이하로 등록해 주세요.');
+  const content=new Uint8Array(await file.arrayBuffer()),contentTypePhoto=imageType(content);
+  if(file.type!==contentTypePhoto)fail(415,'사진 내용과 형식이 일치하지 않습니다.');
+  sameRevision(await activity(env,'byob'),revision);
+  const original=await env.DB.prepare('SELECT * FROM candidates WHERE id=?').bind(id).first<Candidate>();
+  if(!original)fail(404,'와인이 없습니다.','not_found');
+  const reused=(candidate:Candidate)=>(candidate.object_key.includes(`/candidates/${id}/photos/`) || candidate.object_key.startsWith(`candidates/${id}/photos/`))
+    && candidate.object_key.endsWith(`/${requestId}`);
+  if(reused(original))return json({ok:true,candidate:candidatePublic(original,env),reused:true});
+  if((candidatePublic(original,env).photoUrl??'')!==expected)fail(409,'사진이 변경되었습니다. 화면을 새로 고쳐 주세요.','photo_changed');
+  const version=Array.from(crypto.getRandomValues(new Uint8Array(16)),value=>value.toString(16).padStart(2,'0')).join('');
+  const key=workspacePhotoKey(env.WORKSPACE,`candidates/${id}/photos/${version}/${requestId}`);
+  try{
+    await env.PHOTOS.put(key,content,{httpMetadata:{contentType:contentTypePhoto}});
+    const saved=await env.DB.prepare(`UPDATE candidates SET object_key=?,content_type=? WHERE id=? AND object_key=?
+      AND EXISTS(SELECT 1 FROM activities WHERE id='byob' AND revision=?) AND ${activeAdmin(env)} RETURNING *`)
+      .bind(key,contentTypePhoto,id,original.object_key,revision,admin.token_hash,Date.now()).first<Candidate>();
+    if(!saved){
+      await requireAdmin(request,env);sameRevision(await activity(env,'byob'),revision);
+      const current=await env.DB.prepare('SELECT * FROM candidates WHERE id=?').bind(id).first<Candidate>();
+      if(current && reused(current)){await removeCandidatePhotos(env,[key]);return json({ok:true,candidate:candidatePublic(current,env),reused:true});}
+      fail(409,'사진이 변경되었습니다. 화면을 새로 고쳐 주세요.','photo_changed');
+    }
+    return json({ok:true,candidate:candidatePublic(saved,env),cleanupPending:await retryCandidatePhotoCleanup(env)});
+  }catch(error){
+    // The UPDATE may have committed even when its response failed; referenced objects must survive.
+    try{await removeCandidatePhotos(env,[key]);}
+    catch{try{await env.DB.prepare(`INSERT OR IGNORE INTO candidate_photo_cleanup(object_key) SELECT ?
+      WHERE NOT EXISTS(SELECT 1 FROM candidates WHERE object_key=?)
+      AND NOT EXISTS(SELECT 1 FROM vote_history h CROSS JOIN json_each(h.snapshot,'$.rows') c WHERE json_extract(c.value,'$.object_key')=?)`).bind(key,key,key).run();}catch{/* Preserve the object if reference checks are unavailable. */}}
     throw error;
   }
 }
@@ -822,9 +795,12 @@ async function deleteCandidate(request: Request, env: Env, id: string, admin: Se
 }
 async function removeCandidatePhotos(env: Env, keys: string[]) {
   if (!keys.length) return;
-  const photoKeys = keys.filter(Boolean);
+  const photoKeys = (await env.DB.prepare(`SELECT keys.value AS object_key FROM json_each(?) keys WHERE keys.value<>''
+    AND NOT EXISTS(SELECT 1 FROM candidates WHERE object_key=keys.value)
+    AND NOT EXISTS(SELECT 1 FROM vote_history h CROSS JOIN json_each(h.snapshot,'$.rows') c WHERE json_extract(c.value,'$.object_key')=keys.value)`)
+    .bind(JSON.stringify(keys)).all<{object_key:string}>()).results.map(row=>row.object_key);
   if (photoKeys.length) await env.PHOTOS.delete(photoKeys);
-  await env.DB.prepare('DELETE FROM candidate_photo_cleanup WHERE object_key IN (SELECT value FROM json_each(?))').bind(JSON.stringify(keys)).run();
+  await env.DB.prepare('DELETE FROM candidate_photo_cleanup WHERE object_key IN (SELECT value FROM json_each(?))').bind(JSON.stringify(photoKeys)).run();
 }
 function candidatePhotoCleanupCount(env: Env) {
   return env.DB.prepare('SELECT count(*) AS count FROM candidate_photo_cleanup');
@@ -857,17 +833,16 @@ async function resetCandidates(request: Request, env: Env, admin: Session) {
 }
 async function photo(request: Request, env: Env, id: string) {
   const a = await activity(env, 'byob');
-  const publiclyVisible = a.status === 'open' || Boolean(a.published);
-  if (!publiclyVisible && !await session(request, env, 'admin')) fail(403, '사진이 아직 공개되지 않았습니다.');
+  const admin = await session(request, env, 'admin');
+  if (!admin && a.status !== 'open') await resultAccess(request, env, a);
   const c = await env.DB.prepare('SELECT * FROM candidates WHERE id=?').bind(id).first<Candidate>(); if (!c?.object_key) fail(404, '사진이 없습니다.');
   const object = await env.PHOTOS.get(c.object_key); if (!object) fail(404, '사진이 없습니다.');
-  if (publiclyVisible) {
+  try {
     const current = await activity(env, 'byob');
-    if (current.revision !== a.revision || (current.status !== 'open' && !current.published)) {
-      await object.body.cancel();
-      fail(403, '사진이 아직 공개되지 않았습니다.');
-    }
-  }
+    if (current.revision !== a.revision) fail(403, '사진이 아직 공개되지 않았습니다.');
+    if (admin) await requireAdmin(request, env);
+    else if (current.status !== 'open') await resultAccess(request, env, current);
+  } catch (error) { await object.body.cancel(); throw error; }
   return new Response(object.body, { headers: { 'Content-Type': c.content_type, 'Content-Disposition': 'inline', 'Cache-Control': 'no-store' } });
 }
 async function participantLogin(request: Request, env: Env) {
@@ -875,14 +850,22 @@ async function participantLogin(request: Request, env: Env) {
   const data = await body(request);
   const name = normalizeName(data.name);
   const key = nameKey(name);
+  const joinable = `EXISTS(SELECT 1 FROM activities a WHERE a.id='byob' AND (a.status<>'closed' OR EXISTS(
+    SELECT 1 FROM participant_round_entries e JOIN participants p ON p.id=e.participant_id
+    WHERE e.revision=a.revision AND p.name_key=?)))`;
+  const canJoin = () => env.DB.prepare(`SELECT 1 WHERE ${joinable}`).bind(key).first();
+  if (!await canJoin()) fail(403, '이 투표에 참여한 닉네임으로 입장해 주세요.', 'participant_not_entered');
   const token = randomToken(), hash = await digest(token), seconds = 30 * 24 * 3600, now = Date.now();
   await env.DB.batch([
-    env.DB.prepare(`DELETE FROM sessions WHERE (token_hash=? OR expires_at<=?) AND ${activePoll(env)}`).bind(await digest(readCookie(request, cookieName(env, 'participant'))), now),
-    env.DB.prepare(`INSERT INTO participants(id,name,name_key) SELECT ?,?,? WHERE ${activePoll(env)} ON CONFLICT(name_key) DO NOTHING`).bind(crypto.randomUUID(), name, key),
-    env.DB.prepare(`INSERT INTO sessions(token_hash,role,participant_id,expires_at,credential_version) SELECT ?,'participant',id,?,NULL FROM participants WHERE name_key=? AND ${activePoll(env)}`).bind(hash, now + seconds * 1000, key)
+    env.DB.prepare(`DELETE FROM sessions WHERE (token_hash=? OR expires_at<=?) AND ${activePoll(env)} AND ${joinable}`).bind(await digest(readCookie(request, cookieName(env, 'participant'))), now, key),
+    env.DB.prepare(`INSERT INTO participants(id,name,name_key) SELECT ?,?,? WHERE ${activePoll(env)} AND EXISTS(SELECT 1 FROM activities WHERE id='byob' AND status<>'closed') ON CONFLICT(name_key) DO NOTHING`).bind(crypto.randomUUID(), name, key),
+    env.DB.prepare(`INSERT INTO sessions(token_hash,role,participant_id,expires_at,credential_version) SELECT ?,'participant',id,?,NULL FROM participants WHERE name_key=? AND ${activePoll(env)} AND ${joinable}`).bind(hash, now + seconds * 1000, key, key)
   ]);
   const participant = await env.DB.prepare('SELECT p.id,p.name FROM participants p JOIN sessions s ON s.participant_id=p.id WHERE s.token_hash=?').bind(hash).first<Participant>();
-  if (!participant) fail(409, '참여 상태가 바뀌었습니다. 이름을 다시 입력해 주세요.', 'participant_changed');
+  if (!participant) {
+    if (!await canJoin()) fail(403, '이 투표에 참여한 닉네임으로 입장해 주세요.', 'participant_not_entered');
+    fail(409, '참여 상태가 바뀌었습니다. 이름을 다시 입력해 주세요.', 'participant_changed');
+  }
   return json({ participant }, 200, { 'Set-Cookie': sessionCookie(env, 'participant', token, seconds) });
 }
 
@@ -920,15 +903,10 @@ async function route(request: Request, env: Env): Promise<Response> {
   if (path === '/api/admin/session' && method === 'DELETE') { await requireAdmin(request, env); return revoke(request, env, 'admin'); }
   if (path === '/api/bootstrap' && method === 'GET') return bootstrap(request, env);
   const match = /^\/api\/(activities|results)\/([^/]+)(\/answer)?$/.exec(path);
-  if (match) { const id = activityId(match[2]); if (match[1] === 'results' && !match[3] && method === 'GET') return results(env, id); if (match[1] === 'activities' && match[3] && method === 'PUT') return submit(request, env, id); if (match[1] === 'activities' && !match[3] && method === 'GET') return detail(request, env, id); }
+  if (match) { const id = activityId(match[2]); if (match[1] === 'results' && !match[3] && method === 'GET') return results(request, env, id); if (match[1] === 'activities' && match[3] && method === 'PUT') return submit(request, env, id); if (match[1] === 'activities' && !match[3] && method === 'GET') return detail(request, env, id); }
   if (path.startsWith('/api/photos/') && method === 'GET') return photo(request, env, path.slice('/api/photos/'.length));
   if (path.startsWith('/api/admin/')) {
     const admin=await requireAdmin(request, env);
-    if (path === '/api/admin/history' && method === 'GET') return historyList(env);
-    if (path === '/api/admin/history' && method === 'POST') return saveHistory(request, env, admin);
-    const historyMatch = /^\/api\/admin\/history\/([^/]+)(?:\/photos\/([^/]+))?$/.exec(path);
-    if (historyMatch && method === 'GET') return historyMatch[2] ? historyPhoto(env, historyMatch[1], historyMatch[2]) : historyDetail(env, historyMatch[1]);
-    if (historyMatch && !historyMatch[2] && ['PUT', 'DELETE'].includes(method)) return changeHistory(request, env, admin, historyMatch[1]);
     if (path === '/api/admin/reset-all' && method === 'POST') return resetRankedVote(request, env, admin);
     if(path==='/api/admin/password' && method==='POST')return changePassword(request,env,admin);
     if (path === '/api/admin/state' && method === 'GET') return adminState(request, env);
@@ -949,6 +927,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (path === '/api/admin/candidates/cleanup' && method === 'POST') return json({ ok: true, cleanupPending: await retryCandidatePhotoCleanup(env) });
     if (path === '/api/admin/candidates/names' && method === 'PUT') return renameCandidates(request, env, admin);
     if (path === '/api/admin/candidates/order' && method === 'PUT') return reorderCandidates(request, env, admin);
+    const photoMatch=/^\/api\/admin\/candidates\/([^/]+)\/photo$/.exec(path);if(photoMatch && method==='PUT')return replaceCandidatePhoto(request,env,photoMatch[1],admin);
     const candidateMatch = /^\/api\/admin\/candidates\/([^/]+)$/.exec(path); if (candidateMatch) { if (method === 'PATCH') return changeCandidate(request, env, candidateMatch[1], admin); if (method === 'DELETE') return deleteCandidate(request, env, candidateMatch[1], admin); }
   }
   return fail(404, '요청한 경로가 없습니다.', 'not_found');
@@ -963,7 +942,8 @@ async function memberRoute(request: Request, env: Env, ctx?: ExecutionContext): 
     if (!['GET', 'HEAD'].includes(request.method)) sameOrigin(request);
     return await handleMemberRequest(request, env, ctx) ?? fail(404, '요청한 경로가 없습니다.', 'not_found');
   }
-  if (path === '/api/mode' && request.method === 'GET') return json({ mode: 'ranked-byob', membership: true, ownerUrl: '/v/owner' });
+  if (path === '/api/mode' && request.method === 'GET') return json({ mode: 'ranked-byob', membership: true });
+  if (/^\/admin\/p\/owner\/?$/.test(path)) return Response.redirect(new URL('/admin',request.url).href,302);
   const match = /^\/v\/([a-z0-9][a-z0-9-]{1,47})(\/api\/.*)?\/?$/.exec(path);
   let workspace: Workspace | undefined;
   let apiRequest = request;
@@ -983,13 +963,13 @@ async function memberRoute(request: Request, env: Env, ctx?: ExecutionContext): 
     if (member?.status !== 'approved') fail(401, '승인된 회원 로그인이 필요합니다.', 'unauthorized');
     if (workspace && (workspace.memberId ? member.id !== workspace.memberId : member.namespace !== workspace.namespace || member.workspaceSlug !== workspace.slug)) fail(403, '다른 회원의 투표를 관리할 수 없습니다.', 'workspace_forbidden');
     if (!['GET', 'HEAD'].includes(request.method) && request.headers.get('x-member-csrf') !== member.csrfToken) fail(403, '회원 계정이 변경되었습니다. 화면을 새로 고쳐 주세요.', 'csrf');
-    workspace ??= await getWorkspaceBySlug(env,member.workspaceSlug) ?? fail(404,'투표 주소가 없습니다.','not_found');
+    workspace ??= await getWorkspaceBySlug(env,member.publicWorkspaceSlug??member.workspaceSlug) ?? fail(404,'투표 주소가 없습니다.','not_found');
     if (api === '/api/admin/password' || api === '/api/admin/session') {
       return await handleMemberRequest(withPath(request, api.replace('/api/admin/', '/api/members/')), env, ctx)
         ?? fail(404, '요청한 경로가 없습니다.', 'not_found');
     }
   }
-  if(!workspace && api.startsWith('/api/'))workspace=await getWorkspaceBySlug(env,'owner') ?? fail(404,'투표 주소가 없습니다.','not_found');
+  if(!workspace && api.startsWith('/api/'))fail(404,'투표 주소가 없습니다.','not_found');
   if (workspace) {
     await ensureWorkspace(env, workspace);
     let response:Response;

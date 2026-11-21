@@ -28,8 +28,7 @@ test('confirmed owner permanently deletes exactly one namespace, ballots, live/a
     assert.equal((await person(`${path(first.slug)}/activities/byob/answer`,'PUT',{ranking:[candidate.id],revision:0})).status,200);
     assert.equal((await a(`${path(first.slug)}/admin/activities/byob/state`,'POST',{action:'close',revision:0})).status,200);
     const current=await state(a,first.slug);
-    const saved=await a(`${path(first.slug)}/admin/history`,'POST',{expectedRevision:current.activities[0].revision,expectedRosterRevision:current.rosterRevision});assert.equal(saved.status,200);
-    const archive=(await a(`${path(first.slug)}/admin/history/${saved.body.id}`)).body.record;
+    await local.db.prepare(`INSERT INTO m_${first.slug}_vote_history VALUES('old-archive',0,'today','{}')`).run();
     const bucket=await local.mf.getR2Bucket('PHOTOS');
     const prefix=`members/m_${first.slug}/`;
     await bucket.put(prefix+'orphan/late-photo',PNG);await bucket.put('candidates/legacy-unrelated',PNG);await bucket.put(`members/m_${third.slug}/unrelated`,PNG);
@@ -48,7 +47,7 @@ test('confirmed owner permanently deletes exactly one namespace, ballots, live/a
     for(const {name}of names)assert.equal((await local.db.prepare(`SELECT count(*) AS n FROM ${name}`).first()).n,0,name);
     assert.equal((await bucket.list({prefix})).objects.length,0);
     assert(await bucket.get('candidates/legacy-unrelated'));assert(await bucket.get(`members/m_${third.slug}/unrelated`));
-    for(const url of [`/v/${first.slug}`,`${path(first.slug)}/bootstrap`,candidate.photoUrl,archive.rows[0].photoUrl,`${path(first.slug)}/admin/history/${saved.body.id}`,`${path(first.slug)}/admin/state`])assert.equal((await a(url)).status,404,url);
+    for(const url of [`/v/${first.slug}`,`${path(first.slug)}/bootstrap`,candidate.photoUrl,`${path(first.slug)}/admin/history/old-archive`,`${path(first.slug)}/admin/state`])assert.equal((await a(url)).status,404,url);
     assert.equal((await person(`${path(first.slug)}/session`,'POST',{name:'Must not return'})).status,404);
     assert.equal((await person(`${path(first.slug)}/activities/byob/answer`,'PUT',{ranking:[candidate.id],revision:0})).status,404);
     assert.deepEqual(await state(a,second.slug),beforeSecond);assert.deepEqual(await state(b,third.slug),beforeThird);
@@ -94,21 +93,21 @@ test('legacy owner deletion fences root aliases while retaining shared SQL, grad
       const sql=await readFile(new URL(`../migrations/${file}`,import.meta.url),'utf8');
       for(const statement of sql.split(/;\s*(?:\r?\n|$)/).map(value=>value.trim()).filter(Boolean))await local.db.prepare(statement).run();
     }
-    const owner=memberClient(local.mf),person=client(local.mf);await login(owner);
-    const joined=await person('/api/session','POST',{name:'Shared legacy participant'});assert.equal(joined.status,200);
+    const owner=memberClient(local.mf),person=client(local.mf);const authenticated=await login(owner),slug=authenticated.body.member.workspaceSlug,base=`/v/${slug}/api`;
+    const joined=await person(base+'/session','POST',{name:'Shared legacy participant'});assert.equal(joined.status,200);
     await local.db.prepare("UPDATE activities SET status='open',started_at='legacy' WHERE id='price'").run();
     await local.db.prepare("INSERT INTO answers VALUES('price',?,'{\"price\":5}','legacy')").bind(joined.body.participant.id).run();
     await local.db.prepare("INSERT INTO grades VALUES(?,'private result','private note','{}')").bind(joined.body.participant.id).run();
     const upload=await owner('/api/admin/candidates','POST',photo('Legacy shared photo'));assert.equal(upload.status,200);
     const bucket=await local.mf.getR2Bucket('PHOTOS');
     await bucket.put('archives/untyped-other-app',PNG);
-    assert.equal((await owner('/api/members/polls')).body.polls[0].slug,'owner');
+    assert.equal((await owner('/api/members/polls')).body.polls[0].slug,slug);
     const tables=['event','activities','participants','sessions','answers','grades','candidates','vote_history','admin_credentials','admin_bootstrap_history'];
     const dump=async()=>Object.fromEntries(await Promise.all(tables.map(async table=>[table,(await local.db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()).results])));
     const before=await dump(),photos=(await bucket.list()).objects.map(row=>row.key);
     const [worker]=await modules();let deleted=false;
-    const DB={prepare:sql=>local.db.prepare(sql),async batch(statements){deleted=true;assert.deepEqual((await remove(owner,'owner')).body,{ok:true,slug:'owner'});return local.db.batch(statements);}};
-    const staleLogin=await worker.default.fetch(new Request('https://vote.test/api/session',{method:'POST',headers:{Origin:'https://vote.test','Content-Type':'application/json'},body:JSON.stringify({name:'Late shared participant'})}),{...bindings,DB,PHOTOS:bucket});
+    const DB={prepare:sql=>local.db.prepare(sql),async batch(statements){deleted=true;assert.deepEqual((await remove(owner,slug)).body,{ok:true,slug});return local.db.batch(statements);}};
+    const staleLogin=await worker.default.fetch(new Request(`https://vote.test${base}/session`,{method:'POST',headers:{Origin:'https://vote.test','Content-Type':'application/json'},body:JSON.stringify({name:'Late shared participant'})}),{...bindings,DB,PHOTOS:bucket});
     assert(deleted);assert.equal(staleLogin.status,404);
     assert.deepEqual(await dump(),before);assert.deepEqual((await bucket.list()).objects.map(row=>row.key),photos);
     for(const url of ['/api/bootstrap','/api/activities/byob','/api/results/byob','/api/admin/state',upload.body.candidate.photoUrl,'/v/owner','/v/owner/api/bootstrap'])assert.equal((await owner(url)).status,404,url);

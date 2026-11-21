@@ -28,7 +28,7 @@ export async function createApp({ publicOrigin, persist = false, persistenceRoot
           await db.prepare(statement).run();
         }
       }
-      if (legacy) for (const file of ['0004_candidate_description.sql','0005_member_polls.sql','0006_participant_entries.sql','0007_poll_deletion.sql']) {
+      if (legacy) for (const file of ['0004_candidate_description.sql','0005_member_polls.sql','0006_participant_entries.sql','0007_poll_deletion.sql','0008_event_memo.sql','0009_result_audience.sql','0010_owner_poll_link.sql','0011_candidate_photo_replace.sql']) {
         const schema=await readFile(new URL(`../migrations/${file}`,import.meta.url),'utf8');
         for(const statement of schema.split(/;\s*(?:\r?\n|$)/).map(s=>s.trim()).filter(Boolean))await db.prepare(statement).run();
       }

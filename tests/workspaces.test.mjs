@@ -34,6 +34,8 @@ function d1(sqlite) {
 test('fixed SQL identifiers are isolated without changing values, JSON paths, comments or aliases', () => {
   assert.equal(workspaceSql(`SELECT candidates.id,'candidates','byob','$.answers',"participants".id FROM candidates -- answers\n/* event */ JOIN "participants" ON participants.id=?`, workspace.namespace),
     `SELECT ${prefix}candidates.id,'candidates','byob','$.answers',"${prefix}participants".id FROM ${prefix}candidates -- answers\n/* event */ JOIN "${prefix}participants" ON ${prefix}participants.id=?`);
+  assert.equal(workspaceSql('SELECT event.memo,e.revision FROM event JOIN participant_round_entries e ON e.participant_id=?', workspace.namespace),
+    `SELECT ${prefix}event.memo,e.revision FROM ${prefix}event JOIN ${prefix}participant_round_entries e ON e.participant_id=?`);
   for (const namespace of ['owner', 'm_bad', `m_${'a'.repeat(32)};DROP TABLE event`]) assert.throws(() => workspaceSql('SELECT * FROM event', namespace));
 });
 

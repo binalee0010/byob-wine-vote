@@ -29,7 +29,7 @@ const base=slug=>`/v/${slug}/api`;
 async function state(api,slug){const response=await api(`${base(slug)}/admin/state`);assert.equal(response.status,200,JSON.stringify(response.body));return response.body;}
 const expectation=state=>({expectedRevision:state.activities[0].revision,expectedRosterRevision:state.rosterRevision});
 
-test('two permanent polls isolate participants, ballots, photos, settings, archives, reset and member authorization',async()=>{
+test('two permanent polls isolate participants, ballots, photos, settings, live results, reset and member authorization',async()=>{
   const local=await createApp({bindings});
   try {
     const owner=memberClient(local.mf),member=memberClient(local.mf),other=memberClient(local.mf),pending=memberClient(local.mf),anon=client(local.mf);
@@ -85,20 +85,14 @@ test('two permanent polls isolate participants, ballots, photos, settings, archi
     assert.equal((await anon(`${base(second.slug)}/photos/${candidates[0].id}`)).status,404);
     for(const poll of [first,second])assert.equal((await member(`${base(poll.slug)}/admin/activities/byob/state`,'POST',{action:'close',revision:0})).status,200);
     const beforeSecond=await state(member,second.slug);
-    const archived=await member(`${base(first.slug)}/admin/history`,'POST',expectation(await state(member,first.slug)));
-    assert.equal(archived.status,200);
-    assert.equal((await member(`${base(second.slug)}/admin/history/${archived.body.id}`)).status,404);
-    const archive=(await member(`${base(first.slug)}/admin/history/${archived.body.id}`)).body.record;
-    assert.equal(archive.rows[0].description,'Information 0');
+    assert.equal((await member(`${base(first.slug)}/admin/history`,'POST',expectation(await state(member,first.slug)))).status,404);
     const reset=await member(`${base(first.slug)}/admin/reset-all`,'POST',{...expectation(await state(member,first.slug)),confirm:'reset-all'});
     assert.equal(reset.status,200);assert.equal((await state(member,first.slug)).candidates.length,0);
     assert.deepEqual(await state(member,second.slug),beforeSecond);
-    assert.equal((await member(`${base(first.slug)}/admin/history/${archived.body.id}`)).body.record.rows[0].id,candidates[0].id);
     const bucket=await local.mf.getR2Bucket('PHOTOS');
-    for(const poll of [first,second]){
-      const key=(await bucket.list()).objects.find(object=>object.key.startsWith(`members/m_${poll.slug}/`)).key;
-      assert.deepEqual(Buffer.from(await (await bucket.get(key)).arrayBuffer()),PNG);
-    }
+    assert.equal((await bucket.list({prefix:`members/m_${first.slug}/`})).objects.length,0);
+    const key=(await bucket.list({prefix:`members/m_${second.slug}/`})).objects[0].key;
+    assert.deepEqual(Buffer.from(await (await bucket.get(key)).arrayBuffer()),PNG);
     const listed=(await member('/api/members/polls')).body.polls;
     assert.deepEqual(new Set(listed.map(poll=>poll.slug)),new Set([first.slug,second.slug]));
     assert.equal(listed.find(poll=>poll.slug===first.slug).status,'waiting');assert.equal(listed.find(poll=>poll.slug===second.slug).status,'closed');
@@ -235,7 +229,7 @@ test('fresh and existing poll migrations preserve original values, votes and arc
   }finally{db.close();}
 });
 
-for(const legacy of [false,true])test(`poll-list re-entry preserves live results and all legacy snapshots without creating history (${legacy?'existing':'fresh'})`,async()=>{
+for(const legacy of [false,true])test(`poll-list re-entry retains each poll's live results and optional private memo (${legacy?'existing':'fresh'})`,async()=>{
   const local=await createApp({bindings,legacy});
   try{
     if(legacy)for(const file of ['0002_members.sql','0003_password_reset.sql']){
@@ -245,33 +239,34 @@ for(const legacy of [false,true])test(`poll-list re-entry preserves live results
     const owner=memberClient(local.mf);await ownerLogin(owner);
     const poll=(await owner('/api/members/polls','POST',{title:'Retained poll',requestId:'retained-poll-request'})).body.poll;
     const other=(await owner('/api/members/polls','POST',{title:'Other poll',requestId:'other-poll-request'})).body.poll;
-    const snapshots=[];
-    for(let round=0;round<3;round++){
-      const current=await state(owner,poll.slug),revision=current.activities[0].revision;
-      const created=await owner(`${base(poll.slug)}/admin/candidates`,'POST',{name:`Wine ${round}`,description:`Original description ${round}`,requestId:`wine-round-${round}`,revision});assert.equal(created.status,200);const wine=created.body.candidate;
-      assert.equal((await owner(`${base(poll.slug)}/admin/settings`,'PATCH',{activities:[{id:'byob',revision,votingMethod:'winner'}]})).status,200);
-      assert.equal((await owner(`${base(poll.slug)}/admin/activities/byob/state`,'POST',{action:'open',revision})).status,200);
-      const person=client(local.mf);assert.equal((await person(`${base(poll.slug)}/session`,'POST',{name:`Participant ${round}`})).status,200);
-      assert.equal((await person(`${base(poll.slug)}/activities/byob/answer`,'PUT',{ranking:[wine.id],revision})).status,200);
-      assert.equal((await owner(`${base(poll.slug)}/admin/activities/byob/state`,'POST',{action:'close',revision})).status,200);
-      if(round<2){
-        const saved=await owner(`${base(poll.slug)}/admin/history`,'POST',expectation(await state(owner,poll.slug)));assert.equal(saved.status,200);
-        snapshots.push((await owner(`${base(poll.slug)}/admin/history/${saved.body.id}`)).body.record);
-        assert.equal((await owner(`${base(poll.slug)}/admin/reset-all`,'POST',{...expectation(await state(owner,poll.slug)),confirm:'reset-all'})).status,200);
-      }
-    }
-    const polls=(await owner('/api/members/polls')).body.polls;assert.equal(polls.find(row=>row.slug===poll.slug).status,'closed');
-    const before=await state(owner,polls.find(row=>row.slug===poll.slug).slug);assert.equal(before.currentHistoryId,null);assert.equal(before.activities[0].resultsLocked,false);assert.equal(before.submittedCount,1);
-    const history=(await owner(`${base(poll.slug)}/admin/history`)).body.records;assert.deepEqual(new Set(history.map(row=>row.id)),new Set(snapshots.map(row=>row.id)));
-    const renamed=await owner(`${base(poll.slug)}/admin/candidates/names`,'PUT',{revision:before.activities[0].revision,names:[{id:before.candidates[0].id,name:'Corrected live wine'}]});assert.equal(renamed.status,200);
-    const reread=await state(owner,poll.slug);assert.deepEqual(reread.candidates,before.candidates.map(row=>({...row,name:'Corrected live wine'})));assert.deepEqual(reread.byobResults,before.byobResults.map(row=>({...row,name:'Corrected live wine'})));assert.deepEqual(reread.answers,before.answers);
-    assert.equal(reread.currentHistoryId,null);assert.equal((await owner(`${base(other.slug)}/admin/history`)).body.records.length,0);
-    for(const record of snapshots){assert.deepEqual((await owner(`${base(poll.slug)}/admin/history/${record.id}`)).body.record,record);assert.equal((await owner(`${base(other.slug)}/admin/history/${record.id}`)).status,404)}
-    const old=snapshots[0];const edited=await owner(`${base(poll.slug)}/admin/history/${old.id}`,'PUT',{expectedVersion:old.version,title:'Corrected old title',names:[{id:old.rows[0].id,name:'Corrected old wine',description:'Corrected old description'}]});assert.equal(edited.status,200);assert.deepEqual(edited.body.record.rows,old.rows.map(row=>({...row,name:'Corrected old wine',description:'Corrected old description'})));
-    assert.deepEqual(await state(owner,poll.slug),reread);assert.deepEqual((await owner(`${base(poll.slug)}/admin/history/${snapshots[1].id}`)).body.record,snapshots[1]);
-    assert.equal((await owner(`${base(poll.slug)}/admin/history/${old.id}`,'DELETE',{expectedVersion:edited.body.record.version,confirm:'delete-history'})).status,200);assert.deepEqual((await owner(`${base(poll.slug)}/admin/history`)).body.records.map(row=>row.id),[snapshots[1].id]);assert.deepEqual(await state(owner,poll.slug),reread);
-    assert.equal((await owner(`${base(poll.slug)}/admin/activities/byob/state`,'POST',{action:'open',revision:reread.activities[0].revision})).status,200);
-    assert.equal((await owner(`${base(poll.slug)}/admin/candidates/names`,'PUT',{revision:reread.activities[0].revision,names:[{id:reread.candidates[0].id,name:'Blocked while open'}]})).status,409);
+    const originalOther=await state(owner,other.slug);
+    assert.equal(originalOther.event.memo,'');
+    const memo='  Private gathering note\nSecond line\tＷｉｎｅ  ';
+    assert.equal((await owner(`${base(poll.slug)}/admin/settings`,'PATCH',{event:{memo},activities:[{id:'byob',revision:0,votingMethod:'winner'}]})).status,200);
+    const created=await owner(`${base(poll.slug)}/admin/candidates`,'POST',photo('Original wine'));assert.equal(created.status,200);const wine=created.body.candidate;
+    assert.equal((await owner(`${base(poll.slug)}/admin/activities/byob/state`,'POST',{action:'open',revision:0})).status,200);
+    const person=client(local.mf);assert.equal((await person(`${base(poll.slug)}/session`,'POST',{name:'Participant'})).status,200);
+    assert.equal((await person(`${base(poll.slug)}/activities/byob/answer`,'PUT',{ranking:[wine.id],revision:0})).status,200);
+    assert.equal((await owner(`${base(poll.slug)}/admin/activities/byob/state`,'POST',{action:'close',revision:0})).status,200);
+    const before=await state(owner,poll.slug);assert.equal(before.event.memo,memo);assert.equal(before.submittedCount,1);assert.equal(before.byobResults[0].votes,1);
+    const listed=(await owner('/api/members/polls')).body.polls;assert.equal(listed.find(row=>row.slug===poll.slug).status,'closed');assert(listed.every(row=>!Object.hasOwn(row,'memo')));
+    assert.equal(Object.hasOwn((await person(`${base(poll.slug)}/bootstrap`)).body.event,'memo'),false);
+    assert.deepEqual(await state(owner,listed.find(row=>row.slug===poll.slug).slug),before);
+    assert.deepEqual(await state(owner,other.slug),originalOther);
+    const secondLogin=memberClient(local.mf);await ownerLogin(secondLogin);
+    assert.deepEqual(await state(secondLogin,poll.slug),before);
+    assert.equal((await owner(`${base(poll.slug)}/admin/settings`,'PATCH',{event:{title:'Revised title'}})).status,200);
+    const renamed=await owner(`${base(poll.slug)}/admin/candidates/names`,'PUT',{revision:0,names:[{id:wine.id,name:'Corrected live wine'}]});assert.equal(renamed.status,200);
+    const reread=await state(owner,poll.slug);assert.equal(reread.event.memo,memo);
+    assert.deepEqual(reread.byobResults,before.byobResults.map(row=>({...row,name:'Corrected live wine'})));assert.deepEqual(reread.answers,before.answers);assert.deepEqual(reread.participants,before.participants);
+    const bucket=await local.mf.getR2Bucket('PHOTOS');assert.equal((await bucket.list()).objects.length,1);
+    assert.equal((await owner(wine.photoUrl)).status,200);
+    assert.equal((await owner(`${base(poll.slug)}/admin/history`)).status,404);
+    assert.equal((await owner(`${base(poll.slug)}/admin/settings`,'PATCH',{event:{memo:''}})).status,200);
+    assert.equal((await state(owner,poll.slug)).event.memo,'');
+    assert.deepEqual(await state(owner,other.slug),originalOther);
+    assert.equal((await owner(`${base(poll.slug)}/admin/activities/byob/state`,'POST',{action:'open',revision:0})).status,200);
+    assert.equal((await owner(`${base(poll.slug)}/admin/candidates/names`,'PUT',{revision:0,names:[{id:wine.id,name:'Blocked while open'}]})).status,409);
     assert.deepEqual((await local.db.prepare('PRAGMA foreign_key_check').all()).results,[]);
   }finally{await local.mf.dispose()}
 });

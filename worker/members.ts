@@ -7,7 +7,7 @@ import { memberPolls } from './polls';
 import { deleteMemberPoll } from './poll-deletion';
 
 type MemberRow = { id:string; email:string; role:'owner'|'member'; status:'pending'|'approved'|'rejected'; workspace_slug:string; namespace:string|null; password_hash:string|null; credential_version:string|null; created_at:number; reviewed_at:number|null };
-export type MemberSession = { id:string; email:string; role:MemberRow['role']; status:MemberRow['status']; workspaceSlug:string; namespace:string|null; csrfToken:string; tokenHash:string; credentialVersion:string };
+export type MemberSession = { id:string; email:string; role:MemberRow['role']; status:MemberRow['status']; workspaceSlug:string; publicWorkspaceSlug?:string; namespace:string|null; csrfToken:string; tokenHash:string; credentialVersion:string };
 const cookieName='__Host-byob_member', seconds=12*3600;
 class MemberError extends Error { constructor(public status:number,message:string,public code='invalid_request'){super(message);} }
 function fail(status:number,message:string,code?:string):never { throw new MemberError(status,message,code); }
@@ -53,16 +53,26 @@ async function passwordOperation<T>(env:Env,path:string,data:unknown):Promise<T>
   if(!response.ok)fail(503,'비밀번호 검증 설정을 확인해 주세요.','admin_unconfigured');
   return await response.json() as T;
 }
-function workspace(member:Pick<MemberSession,'workspaceSlug'|'namespace'>):Workspace {return {slug:member.workspaceSlug,namespace:member.namespace};}
-function publicMember(member:MemberSession) {return {id:member.id,email:member.email,role:member.role,status:member.status,workspaceSlug:member.workspaceSlug};}
+function workspace(member:Pick<MemberSession,'workspaceSlug'|'publicWorkspaceSlug'|'namespace'>):Workspace {return {slug:member.workspaceSlug,publicSlug:member.publicWorkspaceSlug,namespace:member.namespace};}
+function publicMember(member:MemberSession) {return {id:member.id,email:member.email,role:member.role,status:member.status,workspaceSlug:member.publicWorkspaceSlug??member.workspaceSlug};}
 function state(member:MemberSession|null) {return {authenticated:!!member,csrfToken:member?.csrfToken??null,member:member?publicMember(member):null};}
 
+export async function ownerPollSlug(env:Env):Promise<string> {
+  const row=await env.DB.prepare('SELECT slug FROM owner_poll_link WHERE id=1').first<{slug:string}>();
+  if(!row || !/^[a-f0-9]{32}$/.test(row.slug))return fail(503,'투표 주소 설정을 확인해 주세요.','members_unconfigured');
+  return row.slug;
+}
 export async function getWorkspaceBySlug(env:Env,slug:string):Promise<Workspace|null> {
-  if(slug!=='owner' && !/^[a-f0-9]{32}$/.test(slug))return null;
+  if(!/^[a-f0-9]{32}$/.test(slug))return null;
+  if(slug===await ownerPollSlug(env)){
+    if(await env.DB.prepare("SELECT 1 FROM member_polls WHERE slug='owner' AND deleted_at IS NOT NULL").first())return null;
+    const configuredOwner=ownerEmail(env),owner=await env.DB.prepare("SELECT email,status FROM members WHERE id='owner'").first<{email:string;status:string}>();
+    if(owner && (owner.email!==configuredOwner || owner.status!=='approved'))return null;
+    return {slug:'owner',publicSlug:slug,namespace:null,memberId:'owner'};
+  }
   if(await env.DB.prepare('SELECT 1 FROM member_polls WHERE slug=? AND deleted_at IS NOT NULL').bind(slug).first())return null;
   const poll=await env.DB.prepare("SELECT p.namespace,m.id,m.email,m.role FROM member_polls p JOIN members m ON m.id=p.member_id WHERE p.slug=? AND p.deleted_at IS NULL AND m.status='approved'").bind(slug).first<{namespace:string|null;id:string;email:string;role:string}>();
   if(poll)return poll.role==='owner' && poll.email!==ownerEmail(env)?null:{slug,namespace:poll.namespace,memberId:poll.id};
-  if(slug==='owner'){ownerEmail(env);return {slug:'owner',namespace:null,memberId:'owner'};}
   const row=await env.DB.prepare("SELECT id,workspace_slug,namespace,email,role FROM members WHERE workspace_slug=? AND status='approved'").bind(slug).first<{id:string;workspace_slug:string;namespace:string|null;email:string;role:string}>();
   if(!row || (row.role==='owner' && row.email!==ownerEmail(env)))return null;
   return {slug:row.workspace_slug,namespace:row.namespace,memberId:row.id};
@@ -75,7 +85,7 @@ export async function getMemberSession(request:Request,env:Env):Promise<MemberSe
   if(!row)return null;
   const version=row.role==='owner'?(await legacyAdminCredential(env)).version:row.credential_version;
   if(row.session_version!==version || (row.role==='owner' && (row.email!==configuredOwner || row.status!=='approved')))return null;
-  return {id:row.id,email:row.email,role:row.role,status:row.status,workspaceSlug:row.workspace_slug,namespace:row.namespace,csrfToken:row.csrf_token,tokenHash,credentialVersion:row.session_version};
+  return {id:row.id,email:row.email,role:row.role,status:row.status,workspaceSlug:row.workspace_slug,...(row.role==='owner'?{publicWorkspaceSlug:await ownerPollSlug(env)}:{}),namespace:row.namespace,csrfToken:row.csrf_token,tokenHash,credentialVersion:row.session_version};
 }
 function requireCsrf(request:Request,member:MemberSession) {if(request.headers.get('x-member-csrf')!==member.csrfToken)fail(403,'화면을 새로 고친 뒤 다시 요청해 주세요.','csrf');}
 async function requireSession(request:Request,env:Env) {return await getMemberSession(request,env)??fail(401,'회원 로그인이 필요합니다.','unauthorized');}
@@ -86,7 +96,7 @@ async function createSession(request:Request,env:Env,row:MemberRow,version:strin
     env.DB.prepare(`INSERT INTO member_sessions(token_hash,member_id,credential_version,csrf_token,expires_at) SELECT ?,?,?,?,? WHERE EXISTS(SELECT 1 FROM members m WHERE m.id=? AND m.status=? AND ((m.role='member' AND m.credential_version=?) OR (m.role='owner' AND EXISTS(SELECT 1 FROM admin_credentials WHERE id=1 AND version=?))))`).bind(hash,row.id,version,csrf,Date.now()+seconds*1000,row.id,row.status,version,version)
   ]);
   if(!results[1].meta.changes)fail(409,'계정 정보가 변경되었습니다. 다시 로그인해 주세요.','credential_changed');
-  const member:MemberSession={id:row.id,email:row.email,role:row.role,status:row.status,workspaceSlug:row.workspace_slug,namespace:row.namespace,csrfToken:csrf,tokenHash:hash,credentialVersion:version};
+  const member:MemberSession={id:row.id,email:row.email,role:row.role,status:row.status,workspaceSlug:row.workspace_slug,...(row.role==='owner'?{publicWorkspaceSlug:await ownerPollSlug(env)}:{}),namespace:row.namespace,csrfToken:csrf,tokenHash:hash,credentialVersion:version};
   const headers=new Headers({'Set-Cookie':sessionCookie(value)});
   if(member.status==='approved')headers.append('Set-Cookie',await memberAdminSession(request,env,workspace(member)));
   else headers.append('Set-Cookie',await revokeWorkspaceAdmin(request,env,workspace(member)));

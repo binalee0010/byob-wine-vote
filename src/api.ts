@@ -1,21 +1,21 @@
 export type Id = 'byob';
 export type VotingMethod = 'winner' | 'full' | 'custom';
-export type Activity = { id: Id; title: string; status: 'waiting' | 'open' | 'closed'; published: boolean; started: boolean; revision: number; votingMethod?: VotingMethod; rankPoints?: number[] };
-export type AdminActivity = Activity & { resultsLocked: boolean; resultVisibility: 'private' | 'public' };
+export type ResultVisibility = 'private' | 'participants' | 'public';
+export type Activity = { id: Id; title: string; status: 'waiting' | 'open' | 'closed'; published: boolean; started: boolean; revision: number; votingMethod?: VotingMethod; rankPoints?: number[]; resultVisibility?: ResultVisibility };
+export type AdminActivity = Activity & { resultsLocked: boolean; resultVisibility: ResultVisibility };
 export type EventInfo = { title: string };
+export type AdminEventInfo = EventInfo & { memo: string };
 export type AdminSettingsPatch = {
-  event?: Partial<EventInfo>;
-  activities?: (Pick<Activity, 'id' | 'revision'> & { title?: string; votingMethod?: VotingMethod; rankPoints?: number[]; resultVisibility?: 'private' | 'public' })[];
+  event?: Partial<AdminEventInfo>;
+  activities?: (Pick<Activity, 'id' | 'revision'> & { title?: string; votingMethod?: VotingMethod; rankPoints?: number[]; resultVisibility?: ResultVisibility })[];
 };
 export type Participant = { id: string; name: string; submitted?: Record<Id, boolean> };
 export type Bootstrap = { mode?: 'ranked-byob'; event: EventInfo; activities: Activity[]; participant: Participant | null; admin: boolean };
 export type Candidate = { id: string; number: number; name: string; description?: string; photoUrl: string | null };
 export type ByobResult = Candidate & { candidateId: string; rank: number } & ({ votes: number } | { points: number });
-export type AdminState = { mode?: 'ranked-byob'; participantUrl?: string; event: EventInfo; activities: AdminActivity[]; participants: Participant[]; submittedCount: number; rosterRevision: number; candidates: Candidate[]; photoCleanupPending: number; byobResults?: ByobResult[]; currentHistoryId?: string | null };
-export type VoteHistorySummary = { id: string; version: string; title: string; activityTitle: string; startedAt: string; savedAt: string; votingMethod: VotingMethod; rankPoints: number[]; ballotCount: number };
-export type VoteHistoryRecord = VoteHistorySummary & { rows: ByobResult[] };
+export type AdminState = { mode?: 'ranked-byob'; participantUrl?: string; event: AdminEventInfo; activities: AdminActivity[]; participants: Participant[]; submittedCount: number; rosterRevision: number; candidates: Candidate[]; photoCleanupPending: number; byobResults?: ByobResult[] };
 export type Detail = { activity: Activity; mine: { ranking?: string[] } | null; candidates?: Candidate[]; selectionCount?: number };
-export type Results = { title: string; id: 'byob'; revision?: number; votingMethod?: VotingMethod; rows: ByobResult[] };
+export type Results = { title: string; id: 'byob'; revision?: number; votingMethod?: VotingMethod; participantId?: string; rows: ByobResult[] };
 export class ApiError extends Error { constructor(message: string, public status: number, public code?: string) { super(message); } }
 export type Member = { id: string; email: string; role: 'owner' | 'member'; status: 'pending' | 'approved' | 'rejected'; workspaceSlug: string | null };
 export type MemberSession = { authenticated: boolean; csrfToken: string | null; member: Member | null };

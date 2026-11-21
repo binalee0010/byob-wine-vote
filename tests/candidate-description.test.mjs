@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { client,createApp,TEST_PASSWORD,photo,PNG } from './harness.mjs';
 
-for(const legacy of [false,true])test(`closed candidate and archived descriptions preserve votes, ranks, identities and photos (${legacy?'legacy':'fresh'})`,async()=>{
+for(const legacy of [false,true])test(`closed candidate descriptions preserve votes, ranks, identities and photos (${legacy?'legacy':'fresh'})`,async()=>{
   const local=await createApp({legacy});
   try{
     const admin=client(local.mf),person=client(local.mf),anon=client(local.mf);
@@ -36,24 +36,10 @@ for(const legacy of [false,true])test(`closed candidate and archived description
     assert.equal((await admin('/api/admin/candidates','POST',{name:'New forbidden',requestId:'forbidden-upload',revision:0})).status,409);
     assert.equal((await admin(`/api/admin/candidates/${id}`,'DELETE',{revision:0})).status,409);
     assert.equal((await admin('/api/admin/candidates/order','PUT',{ids:[id],revision:0})).status,409);
-    const saved=await admin('/api/admin/history','POST',{expectedRevision:0,expectedRosterRevision:after.rosterRevision});assert.equal(saved.status,200);
-    const historyPath=`/api/admin/history/${saved.body.id}`;
-    const archive=(await admin(historyPath)).body.record;
-    const rawBefore=await local.db.prepare('SELECT * FROM vote_history WHERE id=?').bind(saved.body.id).first();
-    const currentBefore=(await admin('/api/admin/state')).body;
-    const changed=await admin(historyPath,'PUT',{expectedVersion:archive.version,title:'Corrected title',names:[{id,name:'Archived correction',description:'Archived region correction'}]});
-    assert.equal(changed.status,200);assert.equal(changed.body.record.rows[0].description,'Archived region correction');
-    assert.deepEqual(changed.body.record.rows.map(({name,description,...row})=>row),archive.rows.map(({name,description,...row})=>row));
-    assert.deepEqual((await admin('/api/admin/state')).body,currentBefore);
-    const rawAfter=await local.db.prepare('SELECT * FROM vote_history WHERE id=?').bind(saved.body.id).first();
-    assert.deepEqual({...rawAfter,snapshot:rawBefore.snapshot},rawBefore);
-    const original=JSON.parse(rawBefore.snapshot),updated=JSON.parse(rawAfter.snapshot);
-    assert.deepEqual({...updated,title:original.title,rows:updated.rows.map((row,index)=>({...row,name:original.rows[index].name,description:original.rows[index].description}))},original);
     const bucket=await local.mf.getR2Bucket('PHOTOS');assert.equal((await bucket.list()).objects.length,1);
     assert.deepEqual(Buffer.from(await (await bucket.get(before.candidates[0].object_key)).arrayBuffer()),PNG);
     assert.equal((await admin(path,'PUT',edit('Final correction',''))).status,200);
     assert.equal((await admin('/api/admin/state')).body.candidates[0].description,'');
-    assert.equal((await admin(historyPath)).body.record.rows[0].description,'Archived region correction');
     assert.deepEqual((await local.db.prepare('PRAGMA foreign_key_check').all()).results,[]);
   }finally{await local.mf.dispose();}
 });

@@ -7,14 +7,13 @@ import { preparePhoto } from './image';
 import { submissionStatusText, votingMethodInfo } from './format';
 import { candidateNameChanges, customRankCount, keepProgressEdits, maxRankCount, progressDraftChanges, passwordChangeError, progressFieldKey, progressServerFields, progressSettingsUpdate, useServerDraft } from './forms';
 import DestructiveAction, { type Action } from './DestructiveAction';
-import VoteHistory from './VoteHistory';
 import { AdminHeader } from './SiteChrome';
-const voteTabs = ['투표 진행', '제출 현황', '후보 등록', '투표 결과'];
+const voteTabs = ['투표 진행', '후보 등록', '투표 결과'];
 type ChangePassword = (currentPassword: string, newPassword: string) => Promise<void>;
 type SettingField = (key: string, fallback?: string) => {
     form: string;
     value: string;
-    onChange: (event: ChangeEvent<HTMLInputElement | HTMLSelectElement>) => void;
+    onChange: (event: ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => void;
 };
 function ServerTextInput({ serverValue, ...props }: {
     serverValue: string;
@@ -43,8 +42,9 @@ export default function Admin({ member, pollSlug, onSettings, onLogout, loggingO
     const passwordChanging = useRef(false);
     const epoch = useRef(0);
     const actionPending = useRef(false);
+    const deletingPoll = useRef(false);
     const refresh = useCallback(async () => {
-        if (passwordChanging.current) return;
+        if (passwordChanging.current || deletingPoll.current) return;
         const current = ++epoch.current;
         try {
             const data = await api<AdminState>('/admin/state');
@@ -109,6 +109,28 @@ export default function Admin({ member, pollSlug, onSettings, onLogout, loggingO
             setBusy(false);
         }
     };
+    const removePoll: Action = async (_path, _method, body, feedback) => {
+        if (!member || !pollSlug || actionPending.current || passwordChanging.current || uploadBusy || loggingOut)
+            return false;
+        actionPending.current = true;
+        deletingPoll.current = true;
+        ++epoch.current;
+        setBusy(true); setError(''); setMessage('');
+        try {
+            const result = await api<{ ok: boolean; slug: string }>('/members/polls/' + encodeURIComponent(pollSlug), 'DELETE', body);
+            if (result.ok !== true || result.slug !== pollSlug)
+                throw new Error('삭제 결과를 확인하지 못했습니다. 다시 시도해 주세요.');
+            location.replace('/admin');
+            return true;
+        } catch (failure) {
+            feedback?.error?.((failure as Error).message);
+            return false;
+        } finally {
+            actionPending.current = false;
+            deletingPoll.current = false;
+            setBusy(false);
+        }
+    };
     async function legacyLogin(event: FormEvent) {
         event.preventDefault();
         if (actionPending.current) return;
@@ -136,18 +158,19 @@ export default function Admin({ member, pollSlug, onSettings, onLogout, loggingO
             : !state
             ? connectionError ? <button type="button" onClick={() => { setConnectionError(''); void refresh(); }}>다시 불러오기</button> : <p role="status">내 투표를 불러오고 있습니다…</p>
             : <><nav className="admin-tabs" aria-label="관리 메뉴">{voteTabs.map((title, index) => <button key={title} aria-current={tab === index ? 'page' : undefined} className={tab === index ? 'active' : ''} onClick={() => { setTab(index); setMessage(''); setError(''); }}>{title}</button>)}</nav>
-    <div hidden={tab !== 0}><Progress state={state} action={action} busy={busy || uploadBusy} changePassword={member ? undefined : legacyChangePassword} onResetAll={() => setRegistrationDraftVersion(value => value + 1)}/></div>
-    <div hidden={tab !== 1}><Participants state={state}/></div>
-    <div hidden={tab !== 2}><Candidates key={registrationDraftVersion} state={state} action={action} busy={busy} refresh={refresh} onUploadBusy={setUploadBusy}/></div>
-    <div hidden={tab !== 3}><RankedResponses key={state.activities[0].revision} state={state} action={action} busy={busy || uploadBusy}/>{tab === 3 && <VoteHistory />}</div>
+    <div hidden={tab !== 0}><Progress state={state} action={action} busy={busy || uploadBusy || !!loggingOut} changePassword={member ? undefined : legacyChangePassword} onResetAll={() => setRegistrationDraftVersion(value => value + 1)} pollSlug={member ? pollSlug : undefined} removePoll={member && pollSlug ? removePoll : undefined}/></div>
+    <div hidden={tab !== 1}><Candidates key={registrationDraftVersion} state={state} action={action} busy={busy} refresh={refresh} onUploadBusy={setUploadBusy}/></div>
+    <div hidden={tab !== 2}><RankedResponses key={state.activities[0].revision} state={state} action={action} busy={busy || uploadBusy}/></div>
   </>}</main></div>;
 }
-export function Progress({ state, action, busy, changePassword, onResetAll }: {
+export function Progress({ state, action, busy, changePassword, onResetAll, pollSlug, removePoll }: {
     state: AdminState;
     action: Action;
     busy: boolean;
     changePassword?: ChangePassword;
     onResetAll?: () => void;
+    pollSlug?: string;
+    removePoll?: Action;
 }) {
     const [edits, setEdits] = useState<Record<string, string>>({});
     const [saveError, setSaveError] = useState('');
@@ -212,6 +235,7 @@ export function Progress({ state, action, busy, changePassword, onResetAll }: {
       <h2>투표 정보</h2>
       <div className="progress-fields">
         <label>투표 제목<input {...field('event:title')} maxLength={120} required disabled={busy}/></label>
+        <label>메모<textarea {...field('event:memo')} maxLength={2000} rows={4} disabled={busy}/></label>
       </div>
     </section>
     <section className="panel share-panel">
@@ -226,6 +250,7 @@ export function Progress({ state, action, busy, changePassword, onResetAll }: {
       </div>
       <div className="ranked-activity">{state.activities.map(activity => <ActivityControl key={activity.id + ':' + activity.revision} activity={activity} count={state.submittedCount} total={state.participants.length} action={action} busy={busy} field={field} startBlocked={dirty}/>)}</div>
     </section>
+    <div className="full-width"><Participants state={state}/></div>
     <form id="progress-settings" className="full-width settings-save" onSubmit={saveSettings}>
       <Notice error>{saveError}</Notice>
       <button className="primary" disabled={busy || !dirty}>설정 모두 저장</button>
@@ -233,15 +258,24 @@ export function Progress({ state, action, busy, changePassword, onResetAll }: {
     {changePassword && <PasswordChange busy={busy} onChangePassword={changePassword}/>}
     {<section className="panel full-width destructive-panel">
       <h2>현재 투표 전체 초기화</h2>
-      <p className="muted">현재 참가자, 와인과 응답을 삭제하고 투표를 대기로 되돌립니다. 현재 결과는 삭제되며, 이전에 저장된 기록은 유지됩니다.</p>
+      <p className="muted">현재 참가자, 와인과 응답을 삭제하고 투표를 대기로 되돌립니다. 현재 결과는 삭제됩니다.</p>
       <DestructiveAction label="전체 초기화" action={resetAll} busy={busy} request={{
                 title: '현재 투표를 전체 초기화할까요?',
-                description: `이 투표의 참가 기록과 세션, 와인 ${state.candidates?.length ?? 0}개와 사진, 투표 ${responseCount}건과 현재 결과를 삭제합니다. 투표 제목·방식·배점, 계정 비밀번호와 세션, 이전에 저장된 기록과 기록에 저장된 사진은 유지됩니다. 이 작업은 되돌릴 수 없습니다.`,
+                description: `이 투표의 참가 기록과 세션, 와인 ${state.candidates?.length ?? 0}개와 사진, 투표 ${responseCount}건과 현재 결과를 삭제합니다. 투표 제목·방식·배점, 계정 비밀번호와 세션은 유지됩니다. 이 작업은 되돌릴 수 없습니다.`,
                 path: '/admin/reset-all', method: 'POST', body: { confirm: 'reset-all', expectedRevision: expectedRevisions.byob, expectedRosterRevision: state.rosterRevision },
                 phrase: '전체 초기화', success: result => photoCleanupPending(result)
                     ? '현재 투표를 초기화했습니다. 후보 등록 화면에서 남은 사진을 정리할 수 있습니다.'
-                    : '현재 투표를 초기화했습니다. 이전에 저장된 기록은 유지됩니다.',
+                    : '현재 투표를 초기화했습니다.',
             }}/>
+    </section>}
+    {pollSlug && removePoll && <section className="panel full-width destructive-panel">
+      <h2>투표 삭제</h2>
+      <p className="muted">삭제하면 이 투표의 참가 링크가 닫히고 응답과 결과를 다시 볼 수 없습니다.</p>
+      <DestructiveAction label="투표 삭제" accessibleLabel={state.event.title + ' 투표 삭제'} action={removePoll} busy={busy} request={{
+        title: '‘' + state.event.title + '’ 투표를 삭제할까요?',
+        description: '삭제하면 이 투표의 참가 링크가 닫히고 응답과 결과를 다시 볼 수 없습니다.',
+        path: '/members/polls/' + encodeURIComponent(pollSlug), method: 'DELETE', body: { confirm: 'delete-poll' }, success: '투표를 삭제했습니다.',
+      }}/>
     </section>}</div>;
 }
 export function PasswordChange({ busy, onChangePassword }: {
@@ -316,7 +350,7 @@ function ActivityControl({ activity, count, total, action, busy, field, startBlo
     const visibility = field(progressFieldKey(activity, 'resultVisibility'));
     const visibilityHelp = `${activity.id}-result-visibility-help`;
     const visibilityChanged = visibility.value !== activity.resultVisibility;
-    const willPublishOnClose = activity.resultVisibility === 'public';
+    const willPublishOnClose = activity.resultVisibility !== 'private';
     const resultsLocked = activity.resultsLocked || activity.published;
     const startDisabled = busy || startBlocked || resultsLocked || activity.status === 'open';
     const closeDisabled = busy || activity.status !== 'open' || visibilityChanged;
@@ -328,17 +362,22 @@ function ActivityControl({ activity, count, total, action, busy, field, startBlo
       <VotingMethodSetting activity={activity} busy={busy} field={field}/>
       {<div>
         <label>결과 공개<select className="activity-reveal-select" {...visibility} disabled={busy} aria-describedby={visibilityHelp}>
-          <option value="private">나만 보기</option>
-          <option value="public">다 공개하기</option>
+          <option value="private">호스트만 보기</option>
+          <option value="participants">참가자만 보기</option>
+          <option value="public">전체 공개</option>
         </select></label>
         <small id={visibilityHelp}>
-          {visibility.value === 'public'
+          {visibility.value === 'participants'
                 ? activity.status === 'closed'
-                    ? activity.published ? '참가자에게 결과가 공개되어 있습니다.' : '저장하면 참가자가 결과를 볼 수 있습니다.'
-                    : visibilityChanged ? '저장한 뒤 마감하면 참가자에게 결과가 자동으로 공개됩니다.' : '마감하면 참가자에게 결과가 자동으로 공개됩니다.'
-                : '관리자만 결과를 확인할 수 있습니다.'}
+                    ? visibilityChanged ? '저장하면 이 투표에 참여했던 이름으로 로그인한 참가자만 결과를 볼 수 있습니다.' : '이 투표에 참여했던 이름으로 로그인한 참가자만 결과를 볼 수 있습니다.'
+                    : '마감 후 이 투표에 참여했던 이름으로 로그인한 참가자만 결과를 볼 수 있습니다.'
+                : visibility.value === 'public'
+                    ? activity.status === 'closed'
+                        ? visibilityChanged ? '저장하면 링크가 있는 누구나 결과를 볼 수 있습니다.' : '링크가 있는 누구나 결과를 볼 수 있습니다.'
+                        : '마감 후 링크가 있는 누구나 결과를 볼 수 있습니다.'
+                    : activity.status === 'closed' && visibilityChanged ? '저장하면 호스트만 결과를 볼 수 있습니다.' : '호스트만 결과를 확인할 수 있습니다.'}
           {activity.status === 'open' && visibilityChanged && ' 결과 공개 설정을 저장한 뒤 마감할 수 있습니다.'}
-          {resultsLocked ? ' 결과를 공개했거나 이전에 기록을 저장한 투표는 다시 시작할 수 없습니다.' : visibility.value === 'public' && ' 결과를 공개한 뒤에는 다시 시작할 수 없습니다.'}
+          {resultsLocked ? ' 결과가 잠긴 투표는 다시 시작할 수 없습니다.' : visibility.value !== 'private' && ' 결과를 공개한 뒤에는 다시 시작할 수 없습니다.'}
         </small>
       </div>}
     </div>
@@ -350,7 +389,7 @@ function ActivityControl({ activity, count, total, action, busy, field, startBlo
     {confirm && <div className="confirm-box">
       <p>{confirm === 'close' ? <>
         지금 참여를 마감할까요?
-        {willPublishOnClose && ' 마감하면 결과가 자동으로 공개됩니다. 공개 후에는 다시 시작할 수 없습니다.'}
+        {willPublishOnClose && (activity.resultVisibility === 'participants' ? ' 마감하면 참여했던 이름으로 로그인한 참가자만 결과를 볼 수 있습니다. 공개 후에는 다시 시작할 수 없습니다.' : ' 마감하면 링크가 있는 누구나 결과를 볼 수 있습니다. 공개 후에는 다시 시작할 수 없습니다.')}
       </> : `${votingMethodInfo[activity.votingMethod ?? 'full'].label} 방식으로 투표를 열까요? 시작 후 방식과 와인은 변경할 수 없습니다.`}</p>
       <div className="row">
         <button type="button" className="primary" disabled={confirmDisabled} onClick={async () => {
@@ -365,7 +404,7 @@ function ActivityControl({ activity, count, total, action, busy, field, startBlo
     <div className="activity-reset">
       <DestructiveAction label="투표 리셋" accessibleLabel={activity.title + ' 리셋'} action={action} busy={busy} focusFallback="activity-progress-heading" request={{
             title: activity.title + ' 리셋',
-            description: `투표 ${count}건을 삭제합니다. 대기 상태로 돌아가며 결과 공개 설정은 ‘나만 보기’로 바뀌고 잠금이 풀립니다. 참여 정보, 와인과 사진, 투표 정보는 유지됩니다.`,
+            description: `투표 ${count}건을 삭제합니다. 대기 상태로 돌아가며 결과 공개 설정은 ‘호스트만 보기’로 바뀌고 잠금이 풀립니다. 참여 정보, 와인과 사진, 투표 정보는 유지됩니다.`,
             path: '/admin/activities/' + activity.id + '/reset', method: 'POST',
             body: { confirm: 'reset', expectedRevision: activity.revision }, success: activity.title + ' 투표를 대기로 돌리고 응답과 결과를 지웠습니다.',
         }}/>
@@ -393,14 +432,56 @@ type Upload = {
     error?: string;
     prepared?: File;
 };
-export function sendPhoto(upload: Upload, file: File, onProgress: (value: number) => void): Promise<void> { return new Promise((resolve, reject) => { const xhr = new XMLHttpRequest(); xhr.open('POST', apiPath('/admin/candidates')); const csrf = getMemberCsrfToken(); if (csrf) xhr.setRequestHeader('X-Member-CSRF', csrf); xhr.responseType = 'json'; xhr.timeout = 45000; xhr.upload.onprogress = e => { if (e.lengthComputable)
+export function sendPhoto(upload: Upload, file: File, onProgress: (value: number) => void, replacement?: { candidateId: string; expectedPhotoUrl: string }): Promise<Candidate> { return new Promise((resolve, reject) => { const xhr = new XMLHttpRequest(); xhr.open(replacement ? 'PUT' : 'POST', apiPath('/admin/candidates' + (replacement ? '/' + encodeURIComponent(replacement.candidateId) + '/photo' : ''))); const csrf = getMemberCsrfToken(); if (csrf) xhr.setRequestHeader('X-Member-CSRF', csrf); xhr.responseType = 'json'; xhr.timeout = 45000; xhr.upload.onprogress = e => { if (e.lengthComputable)
     onProgress(Math.round(e.loaded / e.total * 100)); }; xhr.onload = () => { const data = xhr.response as {
     candidate?: Candidate;
+    ok?: boolean;
     error?: string;
-} | null; if (xhr.status >= 200 && xhr.status < 300 && data?.candidate?.id)
-    resolve();
+} | null; if (xhr.status >= 200 && xhr.status < 300 && data?.candidate?.id && (!replacement || (data.ok === true && data.candidate.id === replacement.candidateId && typeof data.candidate.photoUrl === 'string')))
+    resolve(data.candidate);
 else
-    reject(new Error(data?.error || '업로드하지 못했습니다. 다시 시도해 주세요.')); }; xhr.onerror = xhr.ontimeout = () => reject(new Error('연결이 끊겼습니다. 다시 시도하면 같은 사진이 중복 등록되지 않습니다.')); const form = new FormData(); form.set('file', file); form.set('name', upload.name); form.set('requestId', upload.id); form.set('revision', String(upload.revision)); xhr.send(form); }); }
+    reject(new Error(data?.error || '업로드하지 못했습니다. 다시 시도해 주세요.')); }; xhr.onerror = xhr.ontimeout = () => reject(new Error('연결이 끊겼습니다. 다시 시도하면 같은 사진이 중복 등록되지 않습니다.')); const form = new FormData(); form.set('file', file); if (replacement) form.set('expectedPhotoUrl', replacement.expectedPhotoUrl); else form.set('name', upload.name); form.set('requestId', upload.id); form.set('revision', String(upload.revision)); xhr.send(form); }); }
+export function CandidatePhotoEditor({ candidate, revision, busy, onStart, onFinish, refresh, onPhoto }: {
+    candidate: Candidate; revision: number; busy: boolean; onStart: () => boolean; onFinish: () => void;
+    refresh: () => Promise<void>; onPhoto: (candidate: Candidate) => void;
+}) {
+    const [upload, setUpload] = useState<(Upload & { expectedPhotoUrl: string }) | null>(null);
+    const [saved, setSaved] = useState<{ previousPhotoUrl: string | null; photoUrl: string } | null>(null);
+    const submitting = useRef(false);
+    const display = saved && candidate.photoUrl === saved.previousPhotoUrl ? { ...candidate, photoUrl: saved.photoUrl } : candidate;
+    async function submit(next: NonNullable<typeof upload>) {
+        if (busy || submitting.current || !onStart()) return;
+        submitting.current = true;
+        setUpload({ ...next, state: 'compressing', error: '' });
+        try {
+            const file = next.prepared || await preparePhoto(next.file!);
+            next = { ...next, prepared: file, state: 'uploading', progress: 0 };
+            setUpload(next);
+            const result = await sendPhoto(next, file, progress => setUpload(current => current && ({ ...current, progress })), { candidateId: candidate.id, expectedPhotoUrl: next.expectedPhotoUrl });
+            setSaved({ previousPhotoUrl: candidate.photoUrl, photoUrl: result.photoUrl! });
+            setUpload({ ...next, state: 'done' });
+            await refresh();
+        } catch (failure) {
+            setUpload({ ...next, state: 'error', error: (failure as Error).message });
+        } finally {
+            submitting.current = false;
+            onFinish();
+        }
+    }
+    return <><CandidatePhoto candidate={display} onPhoto={onPhoto}/><div className="candidate-photo-upload">
+      <label>{display.photoUrl ? '사진 변경' : '사진 추가'}<input type="file" accept="image/jpeg,image/png,image/webp,.heic,.heif" aria-label={candidate.name + (display.photoUrl ? ' 사진 변경' : ' 사진 추가')} disabled={busy} onChange={event => {
+        const file = event.target.files?.[0]; event.target.value = '';
+        if (file) void submit({ id: crypto.randomUUID(), name: candidate.name, revision, expectedPhotoUrl: display.photoUrl ?? '', file, state: 'ready', progress: 0 });
+      }}/></label>
+      {upload && <div className="upload-status" role="status">
+        <small className="filename">{upload.file?.name}</small>
+        {upload.state === 'compressing' ? '사진 처리 중…' : upload.state === 'uploading' ? `업로드 ${upload.progress}%` : upload.state === 'done' ? '사진을 저장했습니다.' : null}
+        {upload.state === 'uploading' && <progress max={100} value={upload.progress} aria-label={candidate.name + ' 사진 업로드 진행률'}/>}
+        {upload.error && <p role="alert">{upload.error}</p>}
+        {upload.state === 'error' && <button type="button" disabled={busy} onClick={() => { void submit(upload); }}>사진 다시 시도</button>}
+      </div>}
+    </div></>;
+}
 export async function submitCandidateUploads(uploads: Upload[], revision: number, update: (id: string, patch: Partial<Upload>) => void, refresh: () => Promise<void>) {
     for (const upload of uploads) {
         if (upload.revision !== revision || (upload.state !== 'ready' && upload.state !== 'error'))
@@ -475,6 +556,14 @@ export function Candidates({ state, action, busy, refresh, onUploadBusy }: {
     const metadataLocked = locked && byob.status !== 'closed';
     const uploadable = uploads.filter(row => row.revision === byob.revision && (row.state === 'ready' || row.state === 'error'));
     const staleNames = namesDraft !== null && namesDraft.revision !== byob.revision;
+    function beginPhotoUpload() {
+        if (busy || uploadPending.current) return false;
+        uploadPending.current = true; setUploading(true); onUploadBusy(true);
+        return true;
+    }
+    function finishPhotoUpload() {
+        uploadPending.current = false; setUploading(false); onUploadBusy(false);
+    }
     const resetWines: Action = async (path, method, body, feedback) => {
         if (locked || busy || uploadPending.current || !await action(path, method, body, feedback))
             return false;
@@ -539,7 +628,7 @@ export function Candidates({ state, action, busy, refresh, onUploadBusy }: {
             return;
         await saveCandidateNames(event, state, action, setNameError, setNameFeedback);
     }
-    return <><section className="panel"><h2>와인</h2><p className="muted">사진을 선택하거나 이름만 입력해 등록할 수 있습니다. JPEG·PNG·WebP 사진을 사용할 수 있습니다.</p>{locked ? <Notice>{metadataLocked ? '투표 진행 중에는 와인 정보를 변경할 수 없습니다.' : '마감된 투표의 이름과 설명을 수정할 수 있습니다. 사진, 순서와 투표 결과는 유지됩니다.'}</Notice> : <><label className="file-picker">와인 사진 선택<input type="file" accept="image/jpeg,image/png,image/webp,.heic,.heif" multiple disabled={uploading || busy} onChange={e => { const files = Array.from(e.target.files || []); setUploads(old => [...old, ...files.map((file, index) => ({ id: crypto.randomUUID(), revision: byob.revision, file, name: `와인 ${String(state.candidates.length + old.filter(u => u.state !== 'done').length + index + 1).padStart(2, '0')}`, state: 'ready' as const, progress: 0 }))]); e.target.value = ''; }}/></label><small>사진 방향을 바로잡고 긴 변 1,600px, 2MB 이하로 줄여 등록합니다. HEIC는 JPEG·PNG로 변환해 주세요.</small>
+    return <><section className="panel"><h2>와인</h2><p className="muted">사진을 선택하거나 이름만 입력해 등록할 수 있습니다. JPEG·PNG·WebP 사진을 사용할 수 있습니다.</p>{locked ? <Notice>{metadataLocked ? '투표 진행 중에는 사진만 추가하거나 변경할 수 있습니다.' : '마감된 투표의 이름, 설명과 사진을 수정할 수 있습니다. 순서와 투표 결과는 유지됩니다.'}</Notice> : <><label className="file-picker">와인 사진 선택<input type="file" accept="image/jpeg,image/png,image/webp,.heic,.heif" multiple disabled={uploading || busy} onChange={e => { const files = Array.from(e.target.files || []); setUploads(old => [...old, ...files.map((file, index) => ({ id: crypto.randomUUID(), revision: byob.revision, file, name: `와인 ${String(state.candidates.length + old.filter(u => u.state !== 'done').length + index + 1).padStart(2, '0')}`, state: 'ready' as const, progress: 0 }))]); e.target.value = ''; }}/></label><small>사진 방향을 바로잡고 긴 변 1,600px, 2MB 이하로 줄여 등록합니다. HEIC는 JPEG·PNG로 변환해 주세요.</small>
     <form className="wine-name-form" onSubmit={registerNames}>
       <label>사진 없이 등록
         <textarea value={namesDraft?.text ?? ''} disabled={uploading || busy || staleNames} rows={3} placeholder="와인 이름을 한 줄에 하나씩 입력" onChange={event => {
@@ -551,7 +640,7 @@ export function Candidates({ state, action, busy, refresh, onUploadBusy }: {
       {staleNames
                 ? <><Notice>투표가 리셋되어 이전에 입력한 이름은 등록할 수 없습니다.</Notice><button type="button" disabled={uploading || busy} onClick={() => { setNamesDraft(null); setRegistrationError(''); }}>이전 입력 지우기</button></>
                 : <button type="submit" className="secondary" disabled={uploading || busy || !namesDraft?.text.trim()}>이름만 등록</button>}
-    </form></>}{uploads.length > 0 && <div className="upload-list">{uploads.map(upload => <div className={'upload-row ' + upload.state} key={upload.id}><div><small className="filename">{upload.file?.name ?? "사진 없이 등록"}</small><label>표시 이름<input maxLength={maxWineNameLength} value={upload.name} disabled={uploading || locked || upload.revision !== byob.revision || upload.state === 'done' || upload.state === 'error'} onChange={e => update(upload.id, { name: e.target.value })}/></label></div><div className="upload-status"><strong>{upload.state === 'done' ? '✓ 등록 완료' : upload.state === 'compressing' ? '사진 처리 중…' : upload.state === 'uploading' ? (upload.file ? `업로드 ${upload.progress}%` : '등록 중…') : upload.state === 'error' ? '등록 실패' : '등록 대기'}</strong>{upload.state === 'uploading' && upload.file && <progress max={100} value={upload.progress} aria-label={upload.file.name + ' 업로드 진행률'}/>}{upload.revision !== byob.revision && upload.state !== 'done' ? <p>{upload.file ? "투표가 리셋되었습니다. 이 사진은 다시 선택해 주세요." : "투표가 리셋되었습니다. 이 이름은 다시 입력해 주세요."}</p> : upload.error && <p role="alert">{upload.error}</p>}</div></div>)}</div>}{!locked && uploadable.length > 0 && <button className="primary" disabled={uploading || busy || uploadable.some(row => !row.name.trim())} onClick={() => void uploadAll(uploadable)}>{uploading ? '와인을 등록하고 있습니다…' : uploadable.some(row => row.state === 'error') ? '대기·실패 와인 등록' : '선택한 사진 등록'}</button>}</section><div className="section-heading"><h2 id="registered-wines-heading" tabIndex={-1}>등록된 와인 {state.candidates.length}개</h2><span>위에서부터 참가자 화면에 표시됩니다.</span></div><form className="candidate-names-form" onSubmit={saveNames} onChange={() => { setNameError(''); setNameFeedback(''); }}><div className="candidate-grid admin-candidates">{state.candidates.map((candidate, index) => <section className="candidate-card" key={candidate.id + ":" + byob.revision}><CandidatePhoto candidate={candidate} onPhoto={setPhoto}/><div className="candidate-editor"><p className="eyebrow">와인 {String(candidate.number).padStart(2, '0')}</p><label>표시 이름<ServerTextInput name={candidate.id} aria-label={'와인 ' + candidate.number + ' 표시 이름'} serverValue={candidate.name} required maxLength={maxWineNameLength} disabled={metadataLocked || uploading || busy}/></label><label>설명 (선택)<ServerTextArea name={'description:' + candidate.id} aria-label={'와인 ' + candidate.number + ' 설명'} serverValue={candidate.description ?? ''} maxLength={2000} rows={3} disabled={metadataLocked || uploading || busy}/></label>{!locked && <><div className="row"><button type="button" aria-label={candidate.name + ' 위로 이동'} disabled={busy || uploading || index === 0} onClick={() => move(index, -1)}>↑ 위로</button><button type="button" aria-label={candidate.name + ' 아래로 이동'} disabled={busy || uploading || index === state.candidates.length - 1} onClick={() => move(index, 1)}>↓ 아래로</button><button type="button" className="danger" disabled={busy || uploading} onClick={() => setDeleting({ id: candidate.id, revision: byob.revision })}>삭제</button></div>{deleting?.id === candidate.id && deleting.revision === byob.revision && <div className="confirm-box"><p>이 와인을 삭제할까요?</p><div className="row"><button type="button" className="danger" disabled={busy || uploading} onClick={async () => { if (await action('/admin/candidates/' + candidate.id, 'DELETE', { revision: deleting.revision }))
+    </form></>}{uploads.length > 0 && <div className="upload-list">{uploads.map(upload => <div className={'upload-row ' + upload.state} key={upload.id}><div><small className="filename">{upload.file?.name ?? "사진 없이 등록"}</small><label>표시 이름<input maxLength={maxWineNameLength} value={upload.name} disabled={uploading || locked || upload.revision !== byob.revision || upload.state === 'done' || upload.state === 'error'} onChange={e => update(upload.id, { name: e.target.value })}/></label></div><div className="upload-status"><strong>{upload.state === 'done' ? '✓ 등록 완료' : upload.state === 'compressing' ? '사진 처리 중…' : upload.state === 'uploading' ? (upload.file ? `업로드 ${upload.progress}%` : '등록 중…') : upload.state === 'error' ? '등록 실패' : '등록 대기'}</strong>{upload.state === 'uploading' && upload.file && <progress max={100} value={upload.progress} aria-label={upload.file.name + ' 업로드 진행률'}/>}{upload.revision !== byob.revision && upload.state !== 'done' ? <p>{upload.file ? "투표가 리셋되었습니다. 이 사진은 다시 선택해 주세요." : "투표가 리셋되었습니다. 이 이름은 다시 입력해 주세요."}</p> : upload.error && <p role="alert">{upload.error}</p>}</div></div>)}</div>}{!locked && uploadable.length > 0 && <button className="primary" disabled={uploading || busy || uploadable.some(row => !row.name.trim())} onClick={() => void uploadAll(uploadable)}>{uploading ? '와인을 등록하고 있습니다…' : uploadable.some(row => row.state === 'error') ? '대기·실패 와인 등록' : '선택한 사진 등록'}</button>}</section><div className="section-heading"><h2 id="registered-wines-heading" tabIndex={-1}>등록된 와인 {state.candidates.length}개</h2><span>위에서부터 참가자 화면에 표시됩니다.</span></div><form className="candidate-names-form" onSubmit={saveNames} onChange={() => { setNameError(''); setNameFeedback(''); }}><div className="candidate-grid admin-candidates">{state.candidates.map((candidate, index) => <section className="candidate-card" key={candidate.id + ":" + byob.revision}><CandidatePhotoEditor candidate={candidate} revision={byob.revision} busy={busy || uploading} onStart={beginPhotoUpload} onFinish={finishPhotoUpload} refresh={refresh} onPhoto={setPhoto}/><div className="candidate-editor"><p className="eyebrow">와인 {String(candidate.number).padStart(2, '0')}</p><label>표시 이름<ServerTextInput name={candidate.id} aria-label={'와인 ' + candidate.number + ' 표시 이름'} serverValue={candidate.name} required maxLength={maxWineNameLength} disabled={metadataLocked || uploading || busy}/></label><label>설명 (선택)<ServerTextArea name={'description:' + candidate.id} aria-label={'와인 ' + candidate.number + ' 설명'} serverValue={candidate.description ?? ''} maxLength={2000} rows={3} disabled={metadataLocked || uploading || busy}/></label>{!locked && <><div className="row"><button type="button" aria-label={candidate.name + ' 위로 이동'} disabled={busy || uploading || index === 0} onClick={() => move(index, -1)}>↑ 위로</button><button type="button" aria-label={candidate.name + ' 아래로 이동'} disabled={busy || uploading || index === state.candidates.length - 1} onClick={() => move(index, 1)}>↓ 아래로</button><button type="button" className="danger" disabled={busy || uploading} onClick={() => setDeleting({ id: candidate.id, revision: byob.revision })}>삭제</button></div>{deleting?.id === candidate.id && deleting.revision === byob.revision && <div className="confirm-box"><p>이 와인을 삭제할까요?</p><div className="row"><button type="button" className="danger" disabled={busy || uploading} onClick={async () => { if (await action('/admin/candidates/' + candidate.id, 'DELETE', { revision: deleting.revision }))
         setDeleting(null); }}>삭제 확인</button><button type="button" onClick={() => setDeleting(null)}>취소</button></div></div>}</>}</div></section>)}</div><Notice error>{nameError}</Notice><Notice>{nameFeedback}</Notice>{!metadataLocked && !!state.candidates.length && <button className="primary" disabled={busy || uploading}>와인 정보 저장</button>}</form>
     <section className="panel destructive-panel">
       <h2>와인 등록 초기화</h2>

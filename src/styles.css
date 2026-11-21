@@ -111,9 +111,6 @@ body{padding-left:env(safe-area-inset-left,0px);padding-right:env(safe-area-inse
 .ballot-status .submission{color:var(--wine);font-weight:600}
 .admin-shell{padding-bottom:24px}
 .tally-note{margin-top:14px}
-.vote-history .back{margin-top:0}
-.history-entry{display:block;width:100%;text-align:left;overflow-wrap:anywhere}
-.history-entry small{margin-top:4px}
 .ranked-activity{max-width:600px}
 @media(max-width:375px){
   :root{--rank-photo-width:56px}
@@ -133,11 +130,10 @@ body{padding-left:env(safe-area-inset-left,0px);padding-right:env(safe-area-inse
 .admin-header{height:auto;min-height:98px;padding:16px 0}.admin-header h1{min-width:0;flex:1}.admin-site-title{display:block;overflow-wrap:anywhere;color:var(--wine);font-size:22px;font-weight:700;line-height:1.4;letter-spacing:-.4px;text-decoration:none}
 @media(max-width:650px){.admin-header{min-height:82px}}
 
-.history-actions{margin:20px 0}.history-edit-form{padding:20px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);margin:20px 0}.history-conflict{margin:14px 0}.history-conflict button{margin-top:8px}.vote-history>h2{overflow-wrap:anywhere}
 .member-login h2,.member-status h2{margin-bottom:16px}.member-login-links{display:flex;flex-wrap:wrap;gap:4px 10px;margin-top:12px}.member-login-links .text-button{padding-left:0}.member-reset-result:focus{outline:2px solid var(--wine);outline-offset:4px;border-radius:4px}
 .member-shell main{padding-bottom:12px}.member-login h3,.member-status h3{margin-bottom:16px}.member-login fieldset{display:grid;gap:16px}.member-login fieldset>button{justify-self:start}.member-login>.text-button{margin-top:12px}.member-status{display:grid;gap:14px}.member-email{overflow-wrap:anywhere}.member-participant-help{border-top:1px solid var(--line);padding-top:18px}.member-settings-dialog{width:min(680px,calc(100% - 24px));max-height:calc(100vh - 24px);max-height:calc(100dvh - 24px);overflow-y:auto;padding:24px;border:1px solid var(--line);border-radius:18px;background:#fffdfb;color:inherit}.member-settings-dialog::backdrop{background:#28182080}.member-settings-dialog>.member-email{margin-top:16px}.member-settings-dialog>.panel{margin:20px 0}.member-request-list{list-style:none;padding:0;margin:16px 0 0;display:grid;gap:14px}.member-request-list li{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding-top:14px;border-top:1px solid var(--line)}.member-request-list li>div{min-width:0}.member-request-list strong{overflow-wrap:anywhere}.member-request-list .row{flex-shrink:0}.membership-requests>.row{margin-bottom:12px}@media(max-width:480px){.member-settings-dialog{padding:18px 14px}.member-settings-dialog>.panel{padding:18px 14px}.member-request-list li>.row{width:100%;justify-content:flex-end}}
 .member-poll-list{list-style:none;margin:0;padding:0;display:grid;gap:12px}.member-poll-list li{display:flex;align-items:center;justify-content:space-between;gap:12px;border-top:1px solid var(--line);padding-top:12px}.member-poll-list a{overflow-wrap:anywhere;min-width:0;padding:8px 0}.member-poll-list .badge{flex-shrink:0}.member-polls main>.panel{margin-top:20px}.member-polls main>h2{margin-top:24px}.member-polls fieldset>button{margin-top:16px}
-.candidate-description{white-space:pre-wrap;overflow-wrap:anywhere;margin-bottom:16px}.candidate-editor label+label,.history-edit-form label+label{margin-top:12px}.admin-shell main>.section-heading h1{overflow-wrap:anywhere;max-width:100%}
+.candidate-description{white-space:pre-wrap;overflow-wrap:anywhere;margin-bottom:16px}.candidate-editor label+label{margin-top:12px}.admin-shell main>.section-heading h1{overflow-wrap:anywhere;max-width:100%}
 .submission-status-list{list-style:none;margin:0;padding:0;display:grid;gap:12px}.submission-status-list li{display:flex;align-items:center;justify-content:space-between;gap:16px;border-top:1px solid var(--line);padding-top:12px}.submission-status-list strong{min-width:0;overflow-wrap:anywhere}.submission-status-list span{flex-shrink:0;font-size:14px}
 .member-poll-list li > a{flex:1}
-.member-poll-list li > button{flex:none}
+.candidate-photo-upload{padding:16px 18px 0;min-width:0}.candidate-photo-upload input{display:block;width:100%;min-width:0;min-height:44px;margin-top:8px;font-size:14px}.candidate-photo-upload .upload-status{margin-top:10px}

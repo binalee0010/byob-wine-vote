@@ -13,7 +13,7 @@ const bundle = await build({ stdin: { contents: `export {default as MemberPortal
   builder.onResolve({ filter: /^react\/jsx-runtime$/ }, ({ path }) => ({ path: pathToFileURL(require.resolve(path)).href, external: true }));
 } }] });
 const { MemberPortal, PasswordReset, MemberSettings, MembershipRequests, MemberPolls, candidateNameChanges, passwordChangeError, progressServerFields, progressDraftChanges, progressSettingsUpdate, submissionStatusText, api, apiPath, setMemberCsrfToken, setMemberWorkspaceSlug } = await import('data:text/javascript;base64,' + Buffer.from(bundle.outputFiles[0].text).toString('base64'));
-const uploadBundle = await build({ stdin: { contents: `export {default as Admin,sendPhoto,PasswordChange,Candidates,Participants,Progress,RankedResponses} from './Admin';export {default as App,PhotoDialog} from './App'; export {default as CandidatePhoto} from './CandidatePhoto';export {setMemberCsrfToken,setMemberWorkspaceSlug} from './api';`, resolveDir: fileURLToPath(new URL('../src', import.meta.url)), loader: 'tsx' }, bundle: true, write: false, format: 'esm', platform: 'browser', plugins: [{ name: 'legacy-test-hooks', setup(builder) {
+const uploadBundle = await build({ stdin: { contents: `export {default as Admin,sendPhoto,PasswordChange,Candidates,Participants,Progress,RankedResponses} from './Admin';export {default as App,PhotoDialog} from './App'; export {default as CandidatePhoto} from './CandidatePhoto';export {default as DestructiveAction} from './DestructiveAction';export {setMemberCsrfToken,setMemberWorkspaceSlug} from './api';`, resolveDir: fileURLToPath(new URL('../src', import.meta.url)), loader: 'tsx' }, bundle: true, write: false, format: 'esm', platform: 'browser', plugins: [{ name: 'legacy-test-hooks', setup(builder) {
   builder.onResolve({ filter: /^react$/ }, () => ({ path: 'hooks', namespace: 'test' }));
   builder.onLoad({ filter: /^hooks$/, namespace: 'test' }, () => ({ contents: `export const useState=v=>globalThis.memberHooks.state(v);export const useRef=v=>globalThis.memberHooks.memo(()=>({current:v}),[]);export const useEffect=(fn,deps)=>globalThis.memberHooks.effect(fn,deps);export const useLayoutEffect=useEffect;export const useCallback=(fn,deps)=>globalThis.memberHooks.memo(()=>fn,deps);export const useMemo=(fn,deps)=>globalThis.memberHooks.memo(fn,deps);export const useId=()=>globalThis.memberHooks.memo(()=> 'member-settings',[]);` }));
   builder.onResolve({ filter: /^react\/jsx-runtime$/ }, ({ path }) => ({ path: pathToFileURL(require.resolve(path)).href, external: true }));
@@ -428,6 +428,8 @@ test('poll list opens independent polls and creates once with a stable retry req
   try {
     let tree = app.render(); assert.ok(nodes(tree).some(node => node.props?.role === 'status')); await settle(); tree = app.render();
     assert.deepEqual(nodes(tree).filter(node => node.type === 'a').map(node => node.props.href), ['/admin/p/old-poll', '/admin/p/other-poll']);
+    assert.deepEqual(nodes(tree).filter(node => node.type === 'a').map(node => node.props.children), ['보존된 첫 투표', '점심 메뉴']);
+    assert.equal(named(tree, 'DestructiveAction'), undefined); assert.equal(button(tree, '삭제'), undefined);
     assert.equal(globalThis.document.title, '와인 인기투표 · 내 투표 목록');
     assert.equal(named(tree, 'SiteHeader').props.title, '와인 인기투표');
     assert.equal(nodes(tree).find(node => node.type === 'input').props.placeholder, undefined);
@@ -447,32 +449,61 @@ test('poll list opens independent polls and creates once with a stable retry req
   } finally { app.close(); restore(); }
 });
 
-test('poll deletion keeps both rows on failure and removes only the confirmed row after success', async () => {
-  const restore = environment();
-  const polls = ['a','b'].map(slug => ({ slug, title: slug, status: 'closed' }));
-  let deletes = 0;
+test('selected poll deletion confirms its title, retries failures and returns to the list only for a matching acknowledgement', async () => {
+  const restore = environment(); const requests = [];
+  const isolated = await import('data:text/javascript;base64,' + Buffer.from(uploadBundle.outputFiles[0].text).toString('base64') + '#poll-deletion');
+  const state = { event: { title: '삭제할 와인 모임' }, participantUrl: 'https://vote.example/v/managed-poll', activities: [{ id: 'byob', title: '선택', revision: 1, started: false, status: 'waiting', published: false, resultsLocked: false, resultVisibility: 'private' }], participants: [], submittedCount: 0, rosterRevision: 1, candidates: [], photoCleanupPending: 0 };
+  let deletes = 0; let progress; let confirmation;
+  globalThis.location.pathname = '/admin/p/managed-poll';
+  isolated.setMemberWorkspaceSlug('managed-poll'); isolated.setMemberCsrfToken('delete-csrf');
   globalThis.fetch = async (path, init) => {
-    if (init.method === 'GET') return Response.json({ polls });
-    assert.equal(path, '/api/members/polls/a');
-    assert.equal(init.method, 'DELETE');
-    assert.equal(init.headers['X-Member-CSRF'], 'delete-csrf');
+    requests.push([path, init]);
+    if (init.method === 'GET') { assert.equal(path, '/v/managed-poll/api/admin/state'); return Response.json(state); }
+    assert.equal(path, '/api/members/polls/managed-poll'); assert.equal(init.method, 'DELETE');
+    assert.equal(init.headers['X-Member-CSRF'], 'delete-csrf'); assert.equal(init.credentials, 'same-origin');
     assert.deepEqual(JSON.parse(init.body), { confirm: 'delete-poll' });
-    return ++deletes === 1 ? Response.json({ error: '삭제 실패' }, { status: 503 }) : Response.json({ ok: true, slug: 'a' });
+    deletes++;
+    return deletes === 1 ? Response.json({ error: '삭제 실패' }, { status: 503 }) : Response.json({ ok: true, slug: deletes === 2 ? 'other-poll' : 'managed-poll' });
   };
   const onSessionEnded = () => assert.fail('session should remain active');
-  const app = mount(() => MemberPolls({ onSettings() {}, onLogout() {}, onSessionEnded }));
+  const app = mount(() => isolated.Admin({ member: member(), pollSlug: 'managed-poll', onSessionEnded }));
   try {
-    setMemberCsrfToken('delete-csrf'); app.render(); await settle();
-    const controls = () => nodes(app.render()).filter(node => node.type?.name === 'DestructiveAction');
-    const first = controls()[0].props;
-    assert.equal(deletes,0); assert.equal(controls().length,2);
-    assert.ok(first.request.title.includes('‘a’'));
-    let error = '';
-    const confirm = () => first.action(first.request.path,first.request.method,first.request.body,{error:value=>{error=value;},success:first.request.success});
-    assert.equal(await confirm(),false); assert.equal(error,'삭제 실패'); assert.equal(controls().length,2);
-    const success = confirm(); assert.equal(await confirm(),false); assert.equal(await success,true);
-    assert.equal(deletes,2); assert.deepEqual(controls().map(node=>node.props.request.path),['/members/polls/b']);
-  } finally { setMemberCsrfToken(null); app.close(); restore(); }
+    app.render(); await settle(); const adminTree = app.render();
+    assert.equal(button(adminTree, '투표 진행').props['aria-current'], 'page');
+    const progressNode = named(adminTree, 'Progress'); progress = mount(() => isolated.Progress(progressNode.props));
+    const progressTree = progress.render(); const controls = nodes(progressTree).filter(node => node.type?.name === 'DestructiveAction');
+    const deletion = controls.find(node => node.props.label === '투표 삭제'); assert.ok(deletion);
+    assert.equal(controls.at(-1), deletion); assert.ok(deletion.props.request.title.includes('‘삭제할 와인 모임’'));
+    confirmation = mount(() => isolated.DestructiveAction(deletion.props)); let dialog = confirmation.render();
+    button(dialog, '투표 삭제').props.onClick(); dialog = confirmation.render();
+    assert.equal(nodes(dialog).find(node => node.type === 'h2').props.children, deletion.props.request.title);
+    button(dialog, '취소').props.onClick(); dialog = confirmation.render();
+    assert.equal(nodes(dialog).find(node => node.type === 'dialog'), undefined); assert.equal(deletes, 0);
+    button(dialog, '투표 삭제').props.onClick(); dialog = confirmation.render();
+    const submit = () => nodes(confirmation.render()).find(node => node.type === 'form').props.onSubmit({ preventDefault });
+    const first = submit(); await submit(); await first; dialog = confirmation.render();
+    assert.equal(deletes, 1); assert.ok(JSON.stringify(dialog).includes('삭제 실패')); assert.ok(nodes(dialog).find(node => node.type === 'dialog'));
+    assert.deepEqual(globalThis.location.assignments, []); assert.deepEqual(globalThis.location.replacements, []);
+    await submit(); dialog = confirmation.render();
+    assert.equal(deletes, 2); assert.ok(JSON.stringify(dialog).includes('삭제 결과를 확인하지 못했습니다.')); assert.ok(nodes(dialog).find(node => node.type === 'dialog'));
+    assert.deepEqual(globalThis.location.assignments, []); assert.deepEqual(globalThis.location.replacements, []);
+    const success = submit(); await submit(); await success; dialog = confirmation.render();
+    assert.equal(deletes, 3); assert.equal(nodes(dialog).find(node => node.type === 'dialog'), undefined);
+    assert.deepEqual(globalThis.location.replacements, ['/admin']);
+    assert.equal(requests.filter(([, init]) => init.method === 'GET').length, 1);
+  } finally { await settle(); confirmation?.close(); progress?.close(); app.close(); isolated.setMemberCsrfToken(null); restore(); }
+});
+
+test('standalone poll administration does not offer member poll deletion', async () => {
+  const restore = environment(); let progress;
+  globalThis.fetch = async () => Response.json({ event: { title: '독립 투표' }, activities: [{ id: 'byob', title: '선택', revision: 1, started: false, status: 'waiting' }], participants: [], submittedCount: 0, rosterRevision: 1, candidates: [], photoCleanupPending: 0 });
+  const app = mount(() => uploadApi.Admin());
+  try {
+    app.render(); await settle(); const progressNode = named(app.render(), 'Progress');
+    progress = mount(() => uploadApi.Progress(progressNode.props)); const tree = progress.render();
+    assert.equal(nodes(tree).find(node => node.type?.name === 'DestructiveAction' && node.props.label === '투표 삭제'), undefined);
+    assert.ok(named(tree, 'PasswordChange'));
+  } finally { await settle(); progress?.close(); app.close(); restore(); }
 });
 
 test('poll list reloads failed reads and ends an expired member session without creating', async () => {
@@ -568,6 +599,7 @@ test('submission status is read-only and aggregate controls use server counts wi
       assert.ok(!JSON.stringify(progressTree).includes('참가 방식'));
       const reset = named(progressTree, 'DestructiveAction'); assert.ok(reset.props.request.description.includes('이 투표의 참가 기록과 세션'));
       assert.equal(reset.props.request.body.expectedRosterRevision, 7);
+      assert.ok(!JSON.stringify(progressTree).includes('이전에 저장된 기록'));
     } finally { await settle(); progress.close(); }
     const results = mount(() => uploadApi.RankedResponses({ state, action: async () => true, busy: false }));
     try {

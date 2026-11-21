@@ -43,12 +43,13 @@ test('existing schema and configured cookies retain credentials, participants, b
     assert.equal(alias.status, 200);
     assert.equal((await alias.json()).participantUrl, 'https://canonical.example.com/');
     assert.deepEqual(state.body.activities.map(row => row.id), ['byob']);
-    assert.equal(state.body.currentHistoryId, 'existing-history');
+    assert.equal(Object.hasOwn(state.body, 'currentHistoryId'), false);
+    assert.equal(state.body.event.memo, '');
     assert.equal(state.body.byobResults[0].points, 1);
     assert.equal((await person('/api/bootstrap')).body.participant.id, 'existing-person');
     assert.equal((await person('/api/bootstrap')).body.participant.submitted.byob, true);
     assert.equal((await person('/api/activities/byob')).status, 403);
-    assert.equal((await admin('/api/admin/history/existing-history')).body.record.rows[0].name, 'Existing wine');
+    assert.equal((await admin('/api/admin/history/existing-history')).status, 404);
     assert.deepEqual(await dump(local.db), before);
     assert.deepEqual((await local.db.prepare("SELECT name,sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name").all()).results, schema);
     assert.equal((await client(local.mf, `__Host-byob_admin=${adminToken}`)('/api/admin/state')).status, 401);

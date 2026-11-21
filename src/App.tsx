@@ -37,13 +37,14 @@ type EventView = {
     id: Id;
     results: boolean;
     revision: number;
+    resultVisibility?: Activity['resultVisibility'];
 };
 type ViewChangeReason = 'reset' | 'private' | 'participant';
 const resultHiddenNotice = '결과가 비공개로 전환되었습니다.';
 export function viewChangeReason(activity: Activity | undefined, view: EventView): ViewChangeReason | null {
     if (activity?.id !== view.id || activity.revision !== view.revision)
         return 'reset';
-    if (view.results && !activity.published)
+    if (view.results && (!activity.published || (view.resultVisibility !== undefined && activity.resultVisibility !== view.resultVisibility)))
         return 'private';
     return null;
 }
@@ -141,14 +142,15 @@ function ParticipantApp() {
         return <div className="participant-shell ballot-shell"><main>{connectionError ? <>
     <Notice error>{connectionError}</Notice><button type="button" onClick={() => { setConnectionError(''); void refresh().catch(() => { }); }}>다시 불러오기</button>
   </> : <p className="loading" role="status">투표를 불러오고 있어요…</p>}</main></div>;
+    const participantResults = rankedActivity?.status === 'closed' && rankedActivity.resultVisibility === 'participants';
     const identity = !data.participant || changingName
         ? <section className="panel identity"><form onSubmit={verify}>
-      <label htmlFor="participant-name">참여할 이름</label>
+      <label htmlFor="participant-name">{participantResults ? '이 투표에 참여했던 이름' : '참여할 이름'}</label>
       <div className="input-action">
         <input id="participant-name" autoComplete="name" maxLength={80} required value={name} onChange={e => setName(e.target.value)} placeholder="이름"/>
-        <button className="primary" disabled={busy || !name.trim()}>{busy ? '확인 중…' : '참여하기'}</button>
+        <button className="primary" disabled={busy || !name.trim()}>{busy ? '확인 중…' : participantResults ? '결과 보기' : '참여하기'}</button>
       </div>
-      <small>동명이인은 서로 다른 이름을 입력해 주세요.</small>
+      {!participantResults && <small>동명이인은 서로 다른 이름을 입력해 주세요.</small>}
       {changingName && <button type="button" className="text-button" onClick={() => setChangingName(false)}>취소</button>}
     </form></section>
         : <section className="identity-bar"><div><strong>{data.participant.name}</strong> 님</div><div className="row"><button className="text-button" onClick={() => { setChangingName(true); setNotice(''); }}>이름 변경</button><button className="text-button" disabled={busy} onClick={logout}>로그아웃</button></div></section>;
@@ -156,8 +158,8 @@ function ParticipantApp() {
     <SiteHeader title={eventTitle || siteTitle}/>
     <main id="main-content">
       <Notice error>{connectionError}</Notice><Notice error>{error}</Notice><Notice>{notice}</Notice>
-      {(!rankedActivity?.published || data.participant) && identity}
-      {rankedActivity && <RankedVote key={rankedActivity.revision + ':' + rankedActivity.published} activity={rankedActivity} participant={changingName ? null : data.participant} refresh={refresh} onRevisionChanged={refreshRankedView}/>}
+      {(!rankedActivity?.published || participantResults || data.participant) && identity}
+      {rankedActivity && !(rankedActivity.published && connectionError) && <RankedVote key={rankedActivity.revision + ':' + rankedActivity.published + ':' + rankedActivity.resultVisibility + ':' + (changingName ? '' : data.participant?.id ?? '')} activity={rankedActivity} participant={changingName ? null : data.participant} refresh={refresh} onRevisionChanged={refreshRankedView}/>}
     </main>
   </div>;
 }
@@ -167,9 +169,9 @@ export function RankedVote({ activity, participant, refresh, onRevisionChanged }
     refresh: () => Promise<Bootstrap>;
     onRevisionChanged: (view: EventView, reason?: ViewChangeReason) => void;
 }) {
-    const [view] = useState<EventView>(() => ({ id: activity.id, results: activity.published, revision: activity.revision }));
-    if (activity.published)
-        return <PublicResults view={view} onRevisionChanged={onRevisionChanged}/>;
+    const [view] = useState<EventView>(() => ({ id: activity.id, results: activity.published, revision: activity.revision, resultVisibility: activity.resultVisibility }));
+    if (activity.status === 'closed' && activity.published && (activity.resultVisibility !== 'participants' || participant))
+        return <PublicResults view={view} participantId={activity.resultVisibility === 'participants' ? participant?.id : undefined} onRevisionChanged={onRevisionChanged}/>;
     if (activity.status === 'open' && participant)
         return <AnswerForm key={participant.id} activity={activity} view={view} participantId={participant.id} alreadySubmitted={!!participant.submitted?.byob} onRevisionChanged={onRevisionChanged} onSaved={async () => {
                 const next = await refresh();
@@ -186,7 +188,7 @@ export function RankedVote({ activity, participant, refresh, onRevisionChanged }
     return <section className="panel ballot-status">
     <div className="row spread"><h2 id="ranked-vote-heading" tabIndex={-1}>{activity.title}</h2><Status activity={activity}/></div>
     {activity.status === 'closed'
-            ? <>{participant && <p className="submission">{'내 투표 ' + submissionStatusText(!!participant.submitted?.byob)}</p>}<p className="muted">현재 결과는 공개되지 않았어요.</p></>
+            ? <>{participant && <p className="submission">{'내 투표 ' + submissionStatusText(!!participant.submitted?.byob)}</p>}<p className="muted">{activity.resultVisibility === 'participants' ? '참여했던 이름으로 로그인하면 결과를 볼 수 있습니다.' : '현재 결과는 공개되지 않았어요.'}</p></>
             : activity.status === 'waiting'
                 ? <p className="muted">투표가 시작되면 이 화면에서 참여할 수 있어요.</p>
                 : <p className="muted">{votingMethodInfo[activity.votingMethod ?? 'full'].description}</p>}
@@ -374,17 +376,22 @@ export function RankedResultList({ rows, onPhoto, method = 'full', nameEditor }:
     </li>)}
   </ol>;
 }
-function PublicResults({ view, onRevisionChanged }: {
+function PublicResults({ view, participantId, onRevisionChanged }: {
     view: EventView;
-    onRevisionChanged: (view: EventView) => void;
+    participantId?: string;
+    onRevisionChanged: (view: EventView, reason?: ViewChangeReason) => void;
 }) {
     const [results, setResults] = useState<Results | null>(null);
     const [error, setError] = useState('');
     const [photo, setPhoto] = useState<Candidate | null>(null);
+    const loadEpoch = useRef(0);
     const load = useCallback(async () => {
+        const epoch = ++loadEpoch.current;
         try {
             const next = await api<Results>('/results/' + view.id);
-            if (next.id === 'byob' && next.revision !== undefined && next.revision !== view.revision) {
+            if (epoch !== loadEpoch.current) return;
+            if ((next.id === 'byob' && next.revision !== undefined && next.revision !== view.revision) || next.participantId !== participantId) {
+                setResults(null); setPhoto(null);
                 onRevisionChanged(view);
                 return;
             }
@@ -392,14 +399,15 @@ function PublicResults({ view, onRevisionChanged }: {
             setError('');
         }
         catch (e) {
+            if (epoch !== loadEpoch.current) return;
+            setResults(null); setPhoto(null);
             setError((e as Error).message);
+            if (e instanceof ApiError && (e.status === 401 || e.status === 403)) onRevisionChanged(view);
         }
-    }, [view, onRevisionChanged]);
-    useEffect(() => { void load(); }, [load]);
+    }, [view, participantId, onRevisionChanged]);
+    useEffect(() => { let stopped = false; let timer: number; const poll = async () => { await load(); if (!stopped) timer = window.setTimeout(poll, 3000); }; void poll(); return () => { stopped = true; ++loadEpoch.current; clearTimeout(timer); }; }, [load]);
     return <section className="panel results"><p className="eyebrow">함께 나누는 결과</p><h2>{results?.title || '투표 결과'}</h2><Notice error>{error}</Notice>{error && <button onClick={load}>다시 불러오기</button>}{results && <>
-    {results && <>
       <RankedResultList rows={results.rows} onPhoto={setPhoto} method={results.votingMethod}/>
       <p className="muted tally-note">{results.votingMethod === 'winner' ? '득표수가 같으면 공동 순위예요.' : '총점이 같으면 공동 순위예요.'}</p>
-    </>}
   </>}<PhotoDialog photo={photo} onClose={() => setPhoto(null)}/></section>;
 }

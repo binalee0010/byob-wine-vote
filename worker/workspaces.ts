@@ -1,20 +1,24 @@
 import initialSchema from '../migrations/0001_initial.sql';
 import candidateDescription from '../migrations/0004_candidate_description.sql';
 import participantEntries from '../migrations/0006_participant_entries.sql';
+import eventMemo from '../migrations/0008_event_memo.sql';
+import resultAudience from '../migrations/0009_result_audience.sql';
+import candidatePhotoReplace from '../migrations/0011_candidate_photo_replace.sql';
 
-export type Workspace = { slug: string; namespace: string | null; memberId?: string };
+export type Workspace = { slug: string; namespace: string | null; memberId?: string; publicSlug?: string };
 
 export async function workspaceDeleted(env: {DB:D1Database}, workspace:Workspace) {
   return Boolean(await env.DB.prepare('SELECT 1 FROM member_polls WHERE slug=? AND deleted_at IS NOT NULL').bind(workspace.slug).first());
 }
 
 const namespacePattern = /^m_[a-f0-9]{32}$/;
-const objectNames = new Set(Array.from(`${initialSchema}\n${participantEntries}`.matchAll(/CREATE\s+(?:TABLE|INDEX|TRIGGER)\s+(\w+)/gi), match => match[1].toLowerCase()));
+const objectNames = new Set(Array.from(`${initialSchema}\n${participantEntries}\n${resultAudience}\n${candidatePhotoReplace}`.matchAll(/CREATE\s+(?:TABLE|INDEX|TRIGGER)\s+(\w+)/gi), match => match[1].toLowerCase()));
 // SQL values and comments must stay literal, including JSON paths and the BYOB activity ID.
 const sqlTokens = /'(?:''|[^'])*'|--[^\r\n]*|\/\*[\s\S]*?\*\/|"(?:""|[^"])*"|`(?:``|[^`])*`|\[[^\]]*\]|[A-Za-z_][A-Za-z0-9_]*/g;
 
 function checkWorkspace(workspace: Workspace) {
   if (!/^[a-z0-9][a-z0-9-]{1,47}$/.test(workspace.slug) || (workspace.namespace !== null && !namespacePattern.test(workspace.namespace))
+    || (workspace.publicSlug !== undefined && !/^[a-f0-9]{32}$/.test(workspace.publicSlug))
     || (workspace.memberId !== undefined && workspace.memberId !== 'owner' && !/^[a-f0-9]{32}$/.test(workspace.memberId))) {
     throw new Error('Invalid internal workspace');
   }
@@ -49,9 +53,13 @@ export async function ensureWorkspace(env: { DB: D1Database }, workspace: Worksp
   const exists = await env.DB.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").bind(table).first();
   const descriptionReady = async () => /\bdescription\b/i.test((await env.DB.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name=?").bind(`${workspace.namespace}_candidates`).first<{sql:string}>())?.sql ?? '');
   const entriesReady = async () => Boolean(await env.DB.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").bind(`${workspace.namespace}_participant_entries`).first());
-  const descriptionExists = exists && await descriptionReady(), entriesExist = exists && await entriesReady();
-  if (descriptionExists && entriesExist) return;
-  const statements = `${exists ? '' : initialSchema}\n${descriptionExists ? '' : candidateDescription}\n${entriesExist ? '' : participantEntries}`.split(/;\s*(?:\r?\n|$)/).map(statement => statement.trim()).filter(statement => statement && !/^PRAGMA\b/i.test(statement));
+  const memoReady = async () => /\bmemo\b/i.test((await env.DB.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name=?").bind(table).first<{sql:string}>())?.sql ?? '');
+  const audienceReady = async () => /\bresult_visibility\b/i.test((await env.DB.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name=?").bind(`${workspace.namespace}_activities`).first<{sql:string}>())?.sql ?? '');
+  const photoReplaceReady = async () => Boolean(await env.DB.prepare("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name=?").bind(`${workspace.namespace}_candidate_photo_replace_cleanup`).first());
+  const descriptionExists = exists && await descriptionReady(), entriesExist = exists && await entriesReady(), memoExists = exists && await memoReady(), audienceExists = exists && await audienceReady();
+  const photoReplaceExists = exists && await photoReplaceReady();
+  if (descriptionExists && entriesExist && memoExists && audienceExists && photoReplaceExists) return;
+  const statements = `${exists ? '' : initialSchema}\n${descriptionExists ? '' : candidateDescription}\n${entriesExist ? '' : participantEntries}\n${memoExists ? '' : eventMemo}\n${audienceExists ? '' : resultAudience}\n${photoReplaceExists ? '' : candidatePhotoReplace}`.split(/;\s*(?:\r?\n|$)/).map(statement => statement.trim()).filter(statement => statement && !/^PRAGMA\b/i.test(statement));
   // D1 batches are atomic; IF NOT EXISTS and seed conflicts also allow concurrent first access.
   try {
     await env.DB.batch([env.DB.prepare('UPDATE member_polls SET initialized=initialized WHERE slug=?').bind(workspace.slug), ...statements.map(statement => env.DB.prepare(workspaceSql(statement
@@ -60,7 +68,7 @@ export async function ensureWorkspace(env: { DB: D1Database }, workspace: Worksp
   } catch (error) {
     // Another first request may have completed the same atomic schema upgrade.
     if(await workspaceDeleted(env,workspace))throw error;
-    if (!await descriptionReady() || !await entriesReady()) throw error;
+    if (!await descriptionReady() || !await entriesReady() || !await memoReady() || !await audienceReady() || !await photoReplaceReady()) throw error;
   }
 }
 

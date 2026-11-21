@@ -26,7 +26,7 @@ test('configured owner requires the existing password; signup remains pending an
   try {
     const owner=memberClient(local.mf,'192.0.2.1'),member=memberClient(local.mf,'192.0.2.2');
     const legacy=await local.db.prepare('SELECT * FROM event').first();
-    assert.equal((await owner('/v/owner/api/bootstrap')).status,200);
+    assert.equal((await owner('/v/owner/api/bootstrap')).status,404);
     assert.equal((await owner('/api/members/signup','POST',{email:SUPERADMIN_EMAIL.toUpperCase(),password:MEMBER_PASSWORD})).body.code,'owner_signup_forbidden');
     assert.equal((await owner('/api/members/login','POST',{email:SUPERADMIN_EMAIL,password:MEMBER_PASSWORD})).status,401);
     assert.equal(await local.db.prepare("SELECT id FROM members WHERE role='owner'").first(),null);
