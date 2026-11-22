@@ -150,6 +150,37 @@ test('cancelling start or close restores its trigger focus or the progress headi
   } finally { await settle(); control?.close(); env.restore(); }
 });
 
+test('custom rank selects replace an unselected wine, swap selected wines and save the visible order', async () => {
+  const env = environment(); const requests = []; let fail = true; let refreshed = 0; let ballotNode; let ballot;
+  const currentActivity = { ...activity('private', 'open'), resultsLocked: false, votingMethod: 'custom', rankPoints: [5, 2] };
+  const candidates = ['a', 'b', 'c'].map((id, i) => ({ id, number: i + 1, name: id, photoUrl: null }));
+  globalThis.fetch = async (path, init) => {
+    if (init.method === 'GET') return Response.json({ activity: currentActivity, candidates, selectionCount: 2, mine: null });
+    requests.push([path, init.method, JSON.parse(init.body)]);
+    return fail ? Response.json({ error: '저장 실패' }, { status: 503 }) : Response.json({ ok: true });
+  };
+  const entry = mount(() => RankedVote({ activity: currentActivity, participant, refresh: async () => { refreshed++; return { activities: [currentActivity], participant: { ...participant, submitted: { byob: true } } }; }, onRevisionChanged() { assert.fail('the current vote remains active'); } }));
+  const screen = entry.render(); const answer = mount(() => screen.type(screen.props));
+  const render = () => { const tree = answer.render(); ballotNode = named(tree, 'CustomRankBallot'); return tree; };
+  const select = id => nodes(ballot.render()).find(node => node.type === 'select' && node.props['aria-label'] === id + ' 순위');
+  const choose = (id, place) => { select(id).props.onChange({ target: { value: place === null ? '' : String(place) } }); render(); };
+  const readback = () => candidates.map(candidate => select(candidate.id).props.value);
+  try {
+    answer.render(); await settle(); let tree = render(); ballot = mount(() => ballotNode.type(ballotNode.props));
+    for (const candidate of candidates) assert.deepEqual(nodes(select(candidate.id)).filter(node => node.type === 'option').map(node => node.props.value), ['', 0, 1]);
+    choose('a', 0); choose('b', 0); assert.deepEqual(readback(), ['', 0, '']);
+    choose('a', 1); choose('b', 1); assert.deepEqual(readback(), [0, 1, '']);
+    choose('b', null); choose('a', 1); assert.deepEqual(readback(), [1, '', '']);
+    tree = render(); assert.equal(nodes(tree).find(node => node.type === 'button' && node.props.children === '순위 제출').props.disabled, true);
+    choose('a', 0); choose('b', 1); choose('c', 0); choose('b', 0); assert.deepEqual(readback(), ['', 0, 1]);
+    tree = render(); const submit = () => nodes(render()).find(node => node.type === 'form').props.onSubmit({ preventDefault() {} });
+    await submit(); tree = render(); assert.ok(JSON.stringify(tree).includes('저장 실패')); assert.deepEqual(readback(), ['', 0, 1]);
+    fail = false; await submit(); tree = render();
+    assert.deepEqual(requests, Array(2).fill(['/v/poll/api/activities/byob/answer', 'PUT', { ranking: ['b', 'c'], revision: 2, expectedParticipantId: participant.id }]));
+    assert.equal(refreshed, 1); assert.ok(JSON.stringify(tree).includes('투표를 저장했어요.')); assert.deepEqual(readback(), ['', 0, 1]);
+  } finally { ballot?.close(); answer.close(); entry.close(); env.restore(); }
+});
+
 test('participant-only guests receive the existing-name login form and cannot load results', async () => {
   const env = environment(); globalThis.fetch = async () => Response.json({ event: { title: '모임' }, activities: [activity('participants')], participant: null, admin: false });
   const entry = mount(App); const screen = entry.render(); const app = mount(() => screen.type({})); let ranked;

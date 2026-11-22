@@ -612,7 +612,7 @@ async function addCandidate(request: Request, env: Env, admin: Session) {
   } else {
     return fail(415, '와인 등록 요청의 형식을 확인해 주세요.');
   }
-  const name = text(data.name, '와인 이름', 160), requestId = text(data.requestId, '요청 ID', 80);
+  const name = form && data.name === null ? null : text(data.name, '와인 이름', 160), requestId = text(data.requestId, '요청 ID', 80);
   const description = text(data.description ?? '', '와인 설명', 2000, false);
   if (!/^[A-Za-z0-9_-]{8,80}$/.test(requestId)) fail(400, '요청 ID를 확인해 주세요.');
   const revision = revisionNumber(data.revision);
@@ -637,7 +637,8 @@ async function addCandidate(request: Request, env: Env, admin: Session) {
   }
   try {
     await env.DB.prepare(`INSERT INTO candidates(id,number,name,description,object_key,content_type,request_id)
-      SELECT ?,coalesce((SELECT max(number) FROM candidates),0)+1,?,?,?,?,?
+      SELECT ?,next_number,coalesce(?,'와인 ' || printf('%02d',next_number)),?,?,?,?
+      FROM (SELECT coalesce(max(number),0)+1 AS next_number FROM candidates)
       WHERE EXISTS(SELECT 1 FROM activities WHERE id='byob' AND revision=? AND started_at IS NULL) AND ${activeAdmin(env)}
       ON CONFLICT(request_id) DO NOTHING`).bind(id, name, description, key, photoType, requestId, revision, admin.token_hash, Date.now()).run();
     const saved = await lookup().first<Candidate>();

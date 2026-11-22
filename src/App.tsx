@@ -349,7 +349,7 @@ export function CustomRankBallot({ candidates, ranking, rankPoints, disabled, on
         <div className="ranked-result-wine"><small>와인 {candidate.number}</small><strong>{candidate.name}</strong></div>
         <select className="activity-reveal-select" aria-label={candidate.name + ' 순위'} disabled={disabled} value={ranking.includes(candidate.id) ? ranking.indexOf(candidate.id) : ''} onChange={event => onSelect(candidate.id, event.target.value === '' ? null : Number(event.target.value))}>
           <option value="">미선택</option>
-          {rankPoints.map((points, place) => (!ranking[place] || ranking[place] === candidate.id) && <option key={place} value={place}>{place + 1}위 · {points.toLocaleString('ko-KR')}점</option>)}
+          {rankPoints.map((points, place) => <option key={place} value={place}>{place + 1}위 · {points.toLocaleString('ko-KR')}점</option>)}
         </select>
       </li>)}
     </ul>

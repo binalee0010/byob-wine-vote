@@ -435,6 +435,7 @@ type Upload = {
     id: string;
     revision: number;
     file?: File;
+    fileName?: string;
     name: string;
     state: 'ready' | 'compressing' | 'uploading' | 'done' | 'error';
     progress: number;
@@ -449,7 +450,7 @@ export function sendPhoto(upload: Upload, file: File, onProgress: (value: number
 } | null; if (xhr.status >= 200 && xhr.status < 300 && data?.candidate?.id && (!replacement || (data.ok === true && data.candidate.id === replacement.candidateId && typeof data.candidate.photoUrl === 'string')))
     resolve(data.candidate);
 else
-    reject(new Error(data?.error || '업로드하지 못했습니다. 다시 시도해 주세요.')); }; xhr.onerror = xhr.ontimeout = () => reject(new Error('연결이 끊겼습니다. 다시 시도하면 같은 사진이 중복 등록되지 않습니다.')); const form = new FormData(); form.set('file', file); if (replacement) form.set('expectedPhotoUrl', replacement.expectedPhotoUrl); else form.set('name', upload.name); form.set('requestId', upload.id); form.set('revision', String(upload.revision)); xhr.send(form); }); }
+    reject(new Error(data?.error || '업로드하지 못했습니다. 다시 시도해 주세요.')); }; xhr.onerror = xhr.ontimeout = () => reject(new Error('연결이 끊겼습니다. 다시 시도하면 같은 사진이 중복 등록되지 않습니다.')); const form = new FormData(); form.set('file', file); if (replacement) form.set('expectedPhotoUrl', replacement.expectedPhotoUrl); else if (upload.name) form.set('name', upload.name); form.set('requestId', upload.id); form.set('revision', String(upload.revision)); xhr.send(form); }); }
 export function CandidatePhotoEditor({ candidate, revision, busy, onStart, onFinish, refresh, onPhoto }: {
     candidate: Candidate; revision: number; busy: boolean; onStart: () => boolean; onFinish: () => void;
     refresh: () => Promise<void>; onPhoto: (candidate: Candidate) => void;
@@ -468,7 +469,7 @@ export function CandidatePhotoEditor({ candidate, revision, busy, onStart, onFin
             setUpload(next);
             const result = await sendPhoto(next, file, progress => setUpload(current => current && ({ ...current, progress })), { candidateId: candidate.id, expectedPhotoUrl: next.expectedPhotoUrl });
             setSaved({ previousPhotoUrl: candidate.photoUrl, photoUrl: result.photoUrl! });
-            setUpload({ ...next, state: 'done' });
+            setUpload({ ...next, fileName: next.file?.name, file: undefined, prepared: undefined, state: 'done' });
             await refresh();
         } catch (failure) {
             setUpload({ ...next, state: 'error', error: (failure as Error).message });
@@ -483,7 +484,7 @@ export function CandidatePhotoEditor({ candidate, revision, busy, onStart, onFin
         if (file) void submit({ id: crypto.randomUUID(), name: candidate.name, revision, expectedPhotoUrl: display.photoUrl ?? '', file, state: 'ready', progress: 0 });
       }}/></label>
       {upload && <div className="upload-status" role="status">
-        <small className="filename">{upload.file?.name}</small>
+        <small className="filename">{upload.fileName ?? upload.file?.name}</small>
         {upload.state === 'compressing' ? '사진 처리 중…' : upload.state === 'uploading' ? `업로드 ${upload.progress}%` : upload.state === 'done' ? '사진을 저장했습니다.' : null}
         {upload.state === 'uploading' && <progress max={100} value={upload.progress} aria-label={candidate.name + ' 사진 업로드 진행률'}/>}
         {upload.error && <p role="alert">{upload.error}</p>}
@@ -496,26 +497,29 @@ export async function submitCandidateUploads(uploads: Upload[], revision: number
         if (upload.revision !== revision || (upload.state !== 'ready' && upload.state !== 'error'))
             continue;
         try {
+            let candidate: Candidate;
             if (upload.file) {
                 update(upload.id, { state: 'compressing', error: '' });
                 const file = upload.prepared || await preparePhoto(upload.file);
                 update(upload.id, { state: 'uploading', prepared: file, progress: 0 });
-                await sendPhoto(upload, file, progress => update(upload.id, { progress }));
+                candidate = await sendPhoto(upload, file, progress => update(upload.id, { progress }));
             }
             else {
                 update(upload.id, { state: 'uploading', error: '' });
-                const { candidate } = await api<{
+                ({ candidate } = await api<{
                     candidate: Candidate;
-                }>('/admin/candidates', 'POST', { name: upload.name, requestId: upload.id, revision: upload.revision });
+                }>('/admin/candidates', 'POST', { name: upload.name, requestId: upload.id, revision: upload.revision }));
                 if (!candidate?.id)
                     throw new Error('등록 상태를 확인하지 못했습니다. 다시 시도해 주세요.');
             }
-            update(upload.id, { state: 'done', progress: 100 });
-            await refresh();
+            update(upload.id, { state: 'done', progress: 100, name: candidate.name, fileName: upload.file?.name, file: undefined, prepared: undefined });
         }
         catch (e) {
             update(upload.id, { state: 'error', error: (e as Error).message });
+            continue;
         }
+        try { await refresh(); }
+        catch (e) { update(upload.id, { error: (e as Error).message }); }
     }
 }
 function photoCleanupPending(result: unknown) {
@@ -563,7 +567,7 @@ export function Candidates({ state, action, busy, refresh, onUploadBusy }: {
     const byob = state.activities.find(a => a.id === 'byob')!;
     const locked = byob.started;
     const metadataLocked = locked && byob.status !== 'closed';
-    const uploadable = uploads.filter(row => row.revision === byob.revision && (row.state === 'ready' || row.state === 'error'));
+    const failedUploads = uploads.filter(row => row.revision === byob.revision && row.state === 'error');
     const staleNames = namesDraft !== null && namesDraft.revision !== byob.revision;
     function beginPhotoUpload() {
         if (busy || uploadPending.current) return false;
@@ -613,6 +617,15 @@ export function Candidates({ state, action, busy, refresh, onUploadBusy }: {
             onUploadBusy(false);
         }
     }
+    function selectPhotos(event: ChangeEvent<HTMLInputElement>) {
+        const files = Array.from(event.target.files ?? []);
+        event.target.value = '';
+        if (!files.length || locked || busy || uploadPending.current)
+            return;
+        const rows: Upload[] = files.map(file => ({ id: crypto.randomUUID(), revision: byob.revision, file, name: '', state: 'ready', progress: 0 }));
+        setUploads(current => [...current, ...rows]);
+        void uploadAll(rows);
+    }
     function registerNames(event: FormEvent<HTMLFormElement>) {
         event.preventDefault();
         if (locked || busy || uploadPending.current || !namesDraft || staleNames)
@@ -637,7 +650,7 @@ export function Candidates({ state, action, busy, refresh, onUploadBusy }: {
             return;
         await saveCandidateNames(event, state, action, setNameError, setNameFeedback);
     }
-    return <>{(!locked || metadataLocked || uploads.length > 0) && <section className="panel">{locked ? metadataLocked && <Notice>진행 중에는 사진만 변경할 수 있습니다.</Notice> : <><label className="file-picker">와인 사진 선택<input type="file" accept="image/jpeg,image/png,image/webp,.heic,.heif" multiple disabled={uploading || busy} onChange={e => { const files = Array.from(e.target.files || []); setUploads(old => [...old, ...files.map((file, index) => ({ id: crypto.randomUUID(), revision: byob.revision, file, name: `와인 ${String(state.candidates.length + old.filter(u => u.state !== 'done').length + index + 1).padStart(2, '0')}`, state: 'ready' as const, progress: 0 }))]); e.target.value = ''; }}/></label><small>JPEG·PNG·WebP · HEIC는 JPEG·PNG로 변환해 주세요.</small>
+    return <>{(!locked || metadataLocked || uploads.length > 0) && <section className="panel">{locked ? metadataLocked && <Notice>진행 중에는 사진만 변경할 수 있습니다.</Notice> : <><label className="file-picker">와인 사진 등록<input type="file" accept="image/jpeg,image/png,image/webp,.heic,.heif" multiple disabled={uploading || busy} onChange={selectPhotos}/></label><small>JPEG·PNG·WebP · HEIC는 JPEG·PNG로 변환해 주세요.</small>
     <form className="wine-name-form" onSubmit={registerNames}>
       <label>사진 없이 등록
         <textarea value={namesDraft?.text ?? ''} disabled={uploading || busy || staleNames} rows={3} placeholder="와인 이름을 한 줄에 하나씩 입력" onChange={event => {
@@ -649,7 +662,7 @@ export function Candidates({ state, action, busy, refresh, onUploadBusy }: {
       {staleNames
                 ? <><Notice>투표가 리셋되어 이전에 입력한 이름은 등록할 수 없습니다.</Notice><button type="button" disabled={uploading || busy} onClick={() => { setNamesDraft(null); setRegistrationError(''); }}>이전 입력 지우기</button></>
                 : <button type="submit" className="secondary" disabled={uploading || busy || !namesDraft?.text.trim()}>이름만 등록</button>}
-    </form></>}{uploads.length > 0 && <div className="upload-list">{uploads.map(upload => <div className={'upload-row ' + upload.state} key={upload.id}><div><small className="filename">{upload.file?.name ?? "사진 없이 등록"}</small><label>표시 이름<input maxLength={maxWineNameLength} value={upload.name} disabled={uploading || locked || upload.revision !== byob.revision || upload.state === 'done' || upload.state === 'error'} onChange={e => update(upload.id, { name: e.target.value })}/></label></div><div className="upload-status"><strong>{upload.state === 'done' ? '✓ 등록 완료' : upload.state === 'compressing' ? '사진 처리 중…' : upload.state === 'uploading' ? (upload.file ? `업로드 ${upload.progress}%` : '등록 중…') : upload.state === 'error' ? '등록 실패' : '등록 대기'}</strong>{upload.state === 'uploading' && upload.file && <progress max={100} value={upload.progress} aria-label={upload.file.name + ' 업로드 진행률'}/>}{upload.revision !== byob.revision && upload.state !== 'done' ? <p>{upload.file ? "투표가 리셋되었습니다. 이 사진은 다시 선택해 주세요." : "투표가 리셋되었습니다. 이 이름은 다시 입력해 주세요."}</p> : upload.error && <p role="alert">{upload.error}</p>}</div></div>)}</div>}{!locked && uploadable.length > 0 && <button className="primary" disabled={uploading || busy || uploadable.some(row => !row.name.trim())} onClick={() => void uploadAll(uploadable)}>{uploading ? '와인을 등록하고 있습니다…' : uploadable.some(row => row.state === 'error') ? '대기·실패 와인 등록' : '선택한 사진 등록'}</button>}</section>}<div className="section-heading"><h2 id="registered-wines-heading" tabIndex={-1}>등록된 와인 {state.candidates.length}개</h2></div><form className="candidate-names-form" onSubmit={saveNames} onChange={() => { setNameError(''); setNameFeedback(''); }}><div className="candidate-grid admin-candidates">{state.candidates.map((candidate, index) => <section className="candidate-card" key={candidate.id + ":" + byob.revision}><CandidatePhotoEditor candidate={candidate} revision={byob.revision} busy={busy || uploading} onStart={beginPhotoUpload} onFinish={finishPhotoUpload} refresh={refresh} onPhoto={setPhoto}/><div className="candidate-editor"><p className="eyebrow">와인 {String(candidate.number).padStart(2, '0')}</p><label>표시 이름<ServerTextInput name={candidate.id} aria-label={'와인 ' + candidate.number + ' 표시 이름'} serverValue={candidate.name} required maxLength={maxWineNameLength} disabled={metadataLocked || uploading || busy}/></label>{!locked && <><div className="row"><button type="button" aria-label={candidate.name + ' 위로 이동'} disabled={busy || uploading || index === 0} onClick={() => move(index, -1)}>↑ 위로</button><button type="button" aria-label={candidate.name + ' 아래로 이동'} disabled={busy || uploading || index === state.candidates.length - 1} onClick={() => move(index, 1)}>↓ 아래로</button><button type="button" className="danger" disabled={busy || uploading} onClick={() => setDeleting({ id: candidate.id, revision: byob.revision })}>삭제</button></div>{deleting?.id === candidate.id && deleting.revision === byob.revision && <div className="confirm-box"><p>이 와인을 삭제할까요?</p><div className="row"><button type="button" className="danger" disabled={busy || uploading} onClick={async () => { if (await action('/admin/candidates/' + candidate.id, 'DELETE', { revision: deleting.revision }))
+    </form></>}{uploads.length > 0 && <div className="upload-list">{uploads.map(upload => <div className={'upload-row ' + upload.state} key={upload.id}><div><small className="filename">{upload.fileName ?? upload.file?.name ?? "사진 없이 등록"}</small>{upload.name && <span>{upload.name}</span>}</div><div className="upload-status"><strong>{upload.state === 'done' ? '✓ 등록 완료' : upload.state === 'compressing' ? '사진 처리 중…' : upload.state === 'uploading' ? (upload.file ? `업로드 ${upload.progress}%` : '등록 중…') : upload.state === 'error' ? '등록 실패' : '등록 대기'}</strong>{upload.state === 'uploading' && upload.file && <progress max={100} value={upload.progress} aria-label={upload.file.name + ' 업로드 진행률'}/>}{upload.revision !== byob.revision && upload.state !== 'done' ? <p>{upload.file ? "투표가 리셋되었습니다. 이 사진은 다시 선택해 주세요." : "투표가 리셋되었습니다. 이 이름은 다시 입력해 주세요."}</p> : upload.error && <p role="alert">{upload.error}</p>}{upload.state === 'error' && upload.revision === byob.revision && !locked && <button type="button" disabled={uploading || busy} aria-label={(upload.file?.name ?? upload.name) + ' 다시 시도'} onClick={() => void uploadAll([upload])}>다시 시도</button>}</div></div>)}</div>}{!locked && failedUploads.length > 1 && <button type="button" className="secondary" disabled={uploading || busy} onClick={() => void uploadAll(failedUploads)}>실패한 와인 다시 시도</button>}</section>}<div className="section-heading"><h2 id="registered-wines-heading" tabIndex={-1}>등록된 와인 {state.candidates.length}개</h2></div><form className="candidate-names-form" onSubmit={saveNames} onChange={() => { setNameError(''); setNameFeedback(''); }}><div className="candidate-grid admin-candidates">{state.candidates.map((candidate, index) => <section className="candidate-card" key={candidate.id + ":" + byob.revision}><CandidatePhotoEditor candidate={candidate} revision={byob.revision} busy={busy || uploading} onStart={beginPhotoUpload} onFinish={finishPhotoUpload} refresh={refresh} onPhoto={setPhoto}/><div className="candidate-editor"><p className="eyebrow">와인 {String(candidate.number).padStart(2, '0')}</p><label>표시 이름<ServerTextInput name={candidate.id} aria-label={'와인 ' + candidate.number + ' 표시 이름'} serverValue={candidate.name} required maxLength={maxWineNameLength} disabled={metadataLocked || uploading || busy}/></label>{!locked && <><div className="row"><button type="button" aria-label={candidate.name + ' 위로 이동'} disabled={busy || uploading || index === 0} onClick={() => move(index, -1)}>↑ 위로</button><button type="button" aria-label={candidate.name + ' 아래로 이동'} disabled={busy || uploading || index === state.candidates.length - 1} onClick={() => move(index, 1)}>↓ 아래로</button><button type="button" className="danger" disabled={busy || uploading} onClick={() => setDeleting({ id: candidate.id, revision: byob.revision })}>삭제</button></div>{deleting?.id === candidate.id && deleting.revision === byob.revision && <div className="confirm-box"><p>이 와인을 삭제할까요?</p><div className="row"><button type="button" className="danger" disabled={busy || uploading} onClick={async () => { if (await action('/admin/candidates/' + candidate.id, 'DELETE', { revision: deleting.revision }))
         setDeleting(null); }}>삭제 확인</button><button type="button" onClick={() => setDeleting(null)}>취소</button></div></div>}</>}</div></section>)}</div><Notice error>{nameError}</Notice><Notice>{nameFeedback}</Notice>{!metadataLocked && !!state.candidates.length && <button className="primary" disabled={busy || uploading}>와인 정보 저장</button>}</form>
     <section className="panel destructive-panel">
       <h2>와인 등록 초기화</h2>

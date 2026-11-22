@@ -36,9 +36,12 @@ export function isCompleteRanking(ranking: string[], candidates: { id: string }[
 
 export function selectCustomRank(ranking: string[], candidateId: string, place: number | null, count: number) {
   if (place !== null && (place < 0 || place >= count || !Number.isInteger(place))) return ranking;
-  if (place !== null && ranking[place]) return ranking;
+  const previous = ranking.indexOf(candidateId);
   const next = Array.from({ length: count }, (_, index) => ranking[index] === candidateId ? '' : ranking[index] ?? '');
-  if (place !== null) next[place] = candidateId;
+  if (place !== null) {
+    if (previous >= 0 && previous < count) next[previous] = next[place];
+    next[place] = candidateId;
+  }
   return next;
 }
 

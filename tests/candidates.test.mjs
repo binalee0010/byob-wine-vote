@@ -33,6 +33,23 @@ test('candidate images validate bytes, deduplicate concurrent retries and lock a
   } finally { await local.mf.dispose(); }
 });
 
+for (const legacy of [false, true]) test(`unnamed photos use their assigned numbers and retain identity across retries (${legacy ? 'legacy' : 'fresh'})`, async () => {
+  const local = await createApp({ legacy });
+  try {
+    const admin = client(local.mf); assert.equal((await admin('/api/admin/login', 'POST', { password: TEST_PASSWORD })).status, 200);
+    const unnamed = requestId => { const form = photo('unused', requestId); form.delete('name'); form.set('revision', '0'); return form; };
+    const ids = [crypto.randomUUID(), crypto.randomUUID()];
+    const added = await Promise.all(ids.map(id => admin('/api/admin/candidates', 'POST', unnamed(id))));
+    assert.ok(added.every(response => response.status === 200)); assert.equal(new Set(added.map(response => response.body.candidate.id)).size, 2);
+    assert.deepEqual(added.map(response => response.body.candidate.number).sort(), [1, 2]);
+    for (const { body } of added) assert.equal(body.candidate.name, '와인 ' + String(body.candidate.number).padStart(2, '0'));
+    const retried = await admin('/api/admin/candidates', 'POST', unnamed(ids[0])); assert.equal(retried.status, 200); assert.deepEqual(retried.body.candidate, added[0].body.candidate);
+    const explicit = await admin('/api/admin/candidates', 'POST', photo('직접 정한 와인')); assert.equal(explicit.status, 200); assert.equal(explicit.body.candidate.name, '직접 정한 와인');
+    assert.equal((await admin('/api/admin/candidates', 'POST', { revision: 0, requestId: crypto.randomUUID() })).status, 400);
+    assert.equal((await admin('/api/admin/state')).body.candidates.length, 3); assert.equal((await (await local.mf.getR2Bucket('PHOTOS')).list()).objects.length, 3);
+  } finally { await local.mf.dispose(); }
+});
+
 test('full ranking awards eight through one and produces competition ties from complete ballots', async () => {
   const local = await createApp();
   try {
