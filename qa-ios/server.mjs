@@ -24,12 +24,24 @@ const join = await participant(api+'/session','POST',{name:'Safari'});
 assert.equal(join.status,200);
 assert.equal((await participant(api+'/activities/byob/answer','PUT',{ranking:wines.map(w=>w.id),revision:0,expectedParticipantId:join.body.participant.id})).status,200);
 const dist = new URL('../dist/', import.meta.url);
+let observation = {};
+const commands = { submit: 0, reload: 0 };
 createServer(async (req, res) => {
   try {
     const path = new URL(req.url, 'http://localhost').pathname;
     res.setHeader('Cache-Control', 'no-store');
     if (path === '/start') {res.writeHead(302, {Location: root}); return res.end();}
     if (path === '/ready') return res.end('ready');
+    if (path === '/observe' || path === '/observe-command' || path === '/prepare-submit' || path === '/prepare-reload') {
+      res.setHeader('content-type', 'application/json');
+      if (path === '/observe' && req.method === 'POST') {
+        let raw = ''; for await (const data of req) raw += data;
+        observation = JSON.parse(raw);
+      }
+      if (path === '/prepare-submit') commands.submit++;
+      if (path === '/prepare-reload') commands.reload++;
+      return res.end(JSON.stringify(path === '/observe' ? observation : commands));
+    }
     if (path === '/proof') {
       const {body} = await host(api+'/admin/state');
       res.setHeader('content-type','application/json');
@@ -40,8 +52,13 @@ createServer(async (req, res) => {
       const r = await participant(path, req.method, raw?JSON.parse(raw):undefined);
       res.writeHead(r.status, {'content-type':'application/json'}); return res.end(JSON.stringify(r.body));
     }
+    if (path === '/observe.js') {
+      res.setHeader('content-type', 'text/javascript');
+      return res.end(await readFile(new URL('./observe.js', import.meta.url)));
+    }
     const file = path === '/startup.js' || /^\/assets\/[-.\w]+$/.test(path) ? path.slice(1) : 'index.html';
     res.setHeader('content-type',file.endsWith('.html')?'text/html; charset=utf-8':file.endsWith('.css')?'text/css':'text/javascript');
-    res.end(await readFile(new URL(file,dist)));
+    const content = await readFile(new URL(file, dist));
+    res.end(file === 'index.html' ? content.toString().replace('</body>', '<script src="/observe.js"></script></body>') : content);
   } catch (e) { console.error(e); res.writeHead(500); res.end('fixture error'); }
 }).listen(8765,'127.0.0.1',()=>console.log('Isolated vote ready.'));
