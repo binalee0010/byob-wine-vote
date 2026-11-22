@@ -22,6 +22,7 @@ export function existingConfig(input, base) {
     vars: { PUBLIC_ORIGIN: origin.origin, ADMIN_SESSION_COOKIE: input.adminSessionCookie, PARTICIPANT_SESSION_COOKIE: input.participantSessionCookie, MEMBERSHIP_REQUIRED: 'true' },
     d1_databases: [{ binding: 'DB', database_name: input.databaseName, database_id: input.databaseId, migrations_dir: 'migrations-existing' }],
     r2_buckets: [{ binding: 'PHOTOS', bucket_name: input.bucketName }],
+    ...(input.workerName === 'vinolog-vote' && origin.origin === 'https://vote.vinalee.dev' ? { queues: { consumers: [{ queue: 'vinolog-vote-deploy-failures', max_batch_size: 1, max_retries: 5, retry_delay: 300 }] } } : {}),
     routes: [...new Set(input.routes)].map(pattern => ({ pattern, custom_domain: true }))
   };
 }

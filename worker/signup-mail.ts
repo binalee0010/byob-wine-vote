@@ -59,6 +59,21 @@ export async function sendPasswordReset(env: MailEnv, notice: { email: string; t
   } finally { mailer.close(); }
 }
 
+export async function sendBuildFailureNotice(env: MailEnv, notice: { buildUuid: string; accountId: string }) {
+  const recipient = env.SUPERADMIN_EMAIL?.trim();
+  if (!recipient || /[\r\n,;]/.test(recipient)) throw new Error('Invalid mail configuration');
+  const { origin, smtp } = mailConfiguration(env), mailer = transport(smtp);
+  try {
+    const result = await mailer.sendMail({
+      from: smtp.from, to: recipient, subject: '[BYOB] 운영 배포 실패',
+      // shortcut: SMTP acceptance and Queue acknowledgement are not atomic; stable Message-ID groups redelivery, add an outbox if duplicates become a problem.
+      messageId: `<byob-deploy-failure-${notice.buildUuid}@${origin.hostname}>`,
+      text: `와인 인기투표(BYOB)의 운영 빌드 또는 배포가 실패했습니다.\nWorker: vinolog-vote\n저장소: binalee0010/byob-wine-vote\n브랜치: main\n\n아래 Cloudflare 빌드 화면에서 실패 원인을 확인해 주세요.\nhttps://dash.cloudflare.com/${notice.accountId}/workers/services/view/vinolog-vote/production/builds/${notice.buildUuid}`
+    });
+    if (result.accepted.length !== 1 || result.rejected.length) throw new Error('Mail was not accepted');
+  } finally { mailer.close(); }
+}
+
 // Each claim is conditional so signup and the scheduled retry can safely overlap.
 export async function retryPendingNotices(env: MailEnv, memberId?: string, deliver = sendNotice) {
   if (!env.SUPERADMIN_EMAIL) return;

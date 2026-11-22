@@ -3,6 +3,7 @@ import { getMemberSession, getWorkspaceBySlug, handleMemberRequest, type MemberS
 import { ensureWorkspace, workspaceDeleted, workspaceEnv, workspacePhotoKey, type Workspace } from './workspaces';
 import { retryDeletedPollPhotos } from './poll-deletion';
 import { retryPendingNotices } from './signup-mail';
+import { notifyBuildFailures } from './build-failures';
 import { ensurePublicPollLink } from './public-links';
 export { PasswordVerifier };
 export interface Env {
@@ -1008,6 +1009,9 @@ export default {
     if (new URL(request.url).protocol === 'https:') headers.set('Strict-Transport-Security', 'max-age=31536000');
     if (path.startsWith('/api/') || /^\/v\/[^/]+\/api\//.test(path)) { headers.set('Cache-Control','no-store'); headers.set('Pragma','no-cache'); }
     return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+  },
+  async queue(batch: MessageBatch<unknown>, env: Env) {
+    await notifyBuildFailures(batch, env);
   },
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
     if (env.SUPERADMIN_EMAIL) {ctx.waitUntil(retryPendingNotices(env));ctx.waitUntil(retryDeletedPollPhotos(env));}

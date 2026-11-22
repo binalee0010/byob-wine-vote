@@ -97,6 +97,8 @@ GitHub Actions는 푸시와 PR에서 자동 검사만 수행합니다. 위 배�
 
 연결 후 `main`에 푸시하면 Cloudflare가 자체 빌드 명령의 타입·테스트 검사를 통과한 커밋을 배포합니다. GitHub Actions의 기존 검사는 유지되며 Cloudflare와 각각 실행됩니다. 연결 설정과 해당 커밋의 Cloudflare 배포 성공을 확인한 뒤 자동 배포 완료로 판단합니다.
 
+기존 운영 `vinolog-vote`의 배포 설정만 `vinolog-vote-deploy-failures` Queue를 소비합니다. 이 Queue를 [Workers Builds 실패 이벤트 구독](https://developers.cloudflare.com/workers/ci-cd/builds/event-subscriptions/)에 연결하면 `binalee0010/byob-wine-vote`의 `main` 빌드·배포 실패만 기존 `SMTP_CONFIG`로 `SUPERADMIN_EMAIL`에 알립니다. 메일에는 빌드 화면 링크만 담고, 전송 실패는 5분 간격으로 최대 5회 재시도합니다. Queue 재전달에는 같은 Message-ID를 사용하지만 SMTP 수신 직후 응답이 유실되면 중복 메일이 생길 수 있습니다. 운영 배포 토큰에는 Queue consumer 설정 권한도 필요하며, 공개 설치용 `wrangler.jsonc`에는 이 Queue를 추가하지 않습니다.
+
 공유 링크와 QR은 정식 `PUBLIC_ORIGIN`과 해당 투표의 참가 경로를 사용합니다. 투표별로 참가자·후보·사진·집계가 분리되고, 전체 초기화는 현재 열어 둔 투표에만 적용됩니다. 기존 DB에서 다른 활동과 참가 기록을 공유하는 경우에는 전체 초기화를 차단합니다.
 
 운영 배포 전 기존 D1·R2 백업과 설정을 보관하고, 배포 후 기존 쿠키로 참가자 상태·관리자 기록·사진과 정식 QR 주소를 확인하세요. 되돌릴 때도 같은 Worker·DB·R2·secret·쿠키 설정을 사용하면 데이터를 다시 만들 필요가 없습니다.
