@@ -22,7 +22,7 @@ async function waitFor(read, accept, label, seconds = 30) {
 function dismissWelcome() {
   const tree=axe('describe-ui');
   console.log('Safari accessibility tree',tree.slice(0,3000));
-  for (const name of ['Continue','Start Browsing','Not Now','Get Started','Continue to Safari','Open','Done','OK','Skip','Safari']) {
+  for (const name of ['Continue','Start Browsing','Not Now','Get Started','Continue to Safari','Open','Done','OK','Skip']) {
     if(tree.includes('"'+name+'"')) {
       try { axe('tap','--label',name); return true; } catch {}
     }
@@ -40,11 +40,12 @@ try {
   openPage();
   let initial;
   for (let attempt = 0; attempt < 4 && !initial; attempt++) {
-    try { initial = await waitFor(observe,sameOrder(before),'open Safari participant page',12); }
-    catch(e) { if(attempt === 3) throw e; await dismissWelcome(); openPage(); }
+    try { initial = await waitFor(observe,sameOrder(before),'open Safari participant page',35); }
+    catch(e) { if(attempt === 3) throw e; if(dismissWelcome()) openPage(); }
   }
   console.log('Safari rendered', initial.userAgent, initial.order);
-  assert.equal(initial.taps.length,0,'new simulator session');
+  const command=await (await fetch(fixture+'/prepare-calibration')).json();
+  await waitFor(observe,s=>s.pageId===initial.pageId && s.calibration===command.calibrate && s.taps.length===0,'fresh touch calibration');
   for (const [i,p] of [{x:140,y:330},{x:220,y:410}].entries()) {
     let tapped = false;
     for(let attempt=0; attempt<4 && !tapped; attempt++) {

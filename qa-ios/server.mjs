@@ -25,19 +25,20 @@ assert.equal(join.status,200);
 assert.equal((await participant(api+'/activities/byob/answer','PUT',{ranking:wines.slice(0,3).map(w=>w.id),revision:0,expectedParticipantId:join.body.participant.id})).status,200);
 const dist = new URL('../dist/', import.meta.url);
 let observation = {};
-const commands = { submit: 0, reload: 0 };
+const commands = { calibrate: 0, submit: 0, reload: 0 };
 createServer(async (req, res) => {
   try {
     const path = new URL(req.url, 'http://localhost').pathname;
     res.setHeader('Cache-Control', 'no-store');
     if (path === '/start') {res.writeHead(302, {Location: root}); return res.end();}
     if (path === '/ready') return res.end('ready');
-    if (path === '/observe' || path === '/observe-command' || path === '/prepare-submit' || path === '/prepare-reload') {
+    if (path === '/observe' || path === '/observe-command' || path === '/prepare-calibration' || path === '/prepare-submit' || path === '/prepare-reload') {
       res.setHeader('content-type', 'application/json');
       if (path === '/observe' && req.method === 'POST') {
         let raw = ''; for await (const data of req) raw += data;
         observation = JSON.parse(raw);
       }
+      if (path === '/prepare-calibration') commands.calibrate++;
       if (path === '/prepare-submit') commands.submit++;
       if (path === '/prepare-reload') commands.reload++;
       return res.end(JSON.stringify(path === '/observe' ? observation : commands));
