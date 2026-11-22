@@ -1,0 +1,48 @@
+name: iPhone Safari drag check
+on:
+  push:
+    branches: [qa/ios-safari-rank-nov22]
+permissions:
+  contents: read
+jobs:
+  safari:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Start iPhone simulator and test tools
+        run: |
+          set -e
+          xcodebuild -version
+          xcrun simctl list devices available -j > "$RUNNER_TEMP/devices.json"
+          phone=$(node -e "const d=require(process.env.RUNNER_TEMP+'/devices.json').devices; const r=Object.keys(d).filter(k=>k.includes('.iOS-')&&d[k].some(x=>x.name.startsWith('iPhone'))).sort((a,b)=>b.localeCompare(a,undefined,{numeric:true}))[0];const p=d[r].find(x=>/^iPhone (17|16)$/.test(x.name))??d[r].find(x=>x.name.startsWith('iPhone'));console.error(r,p.name);console.log(p.udid)")
+          echo "QA_PHONE=$phone" >> "$GITHUB_ENV"
+          xcrun simctl boot "$phone"
+          npm ci --no-audit --no-fund
+          npm run build
+          npm install --prefix "$RUNNER_TEMP/ios-tools" --no-fund --no-audit appium@4.0.0
+          "$RUNNER_TEMP/ios-tools/node_modules/.bin/appium" driver install --source=npm appium-xcuitest-driver@13.6.1
+          xcrun simctl bootstatus "$phone" -b
+      - name: Drag in Apple Mobile Safari
+        run: |
+          set -e
+          mkdir -p evidence
+          node qa-ios/server.mjs > evidence/app.log 2>&1 &
+          "$RUNNER_TEMP/ios-tools/node_modules/.bin/appium" --address 127.0.0.1 --port 4723 > evidence/driver.log 2>&1 &
+          for i in {1..60}; do
+            if curl -fsS http://127.0.0.1:4723/status >/dev/null && curl -fsS http://127.0.0.1:8765/ready >/dev/null; then break; fi
+            sleep 2
+          done
+          node qa-ios/drag.mjs
+      - name: Record Safari evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: iphone-safari-evidence
+          path: evidence/
+          retention-days: 5
