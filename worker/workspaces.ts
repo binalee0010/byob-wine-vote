@@ -4,8 +4,9 @@ import participantEntries from '../migrations/0006_participant_entries.sql';
 import eventMemo from '../migrations/0008_event_memo.sql';
 import resultAudience from '../migrations/0009_result_audience.sql';
 import candidatePhotoReplace from '../migrations/0011_candidate_photo_replace.sql';
+import { publicAliasPattern } from './public-links';
 
-export type Workspace = { slug: string; namespace: string | null; memberId?: string; publicSlug?: string };
+export type Workspace = { slug: string; namespace: string | null; memberId?: string; publicSlug?: string; publicAlias?: string };
 
 export async function workspaceDeleted(env: {DB:D1Database}, workspace:Workspace) {
   return Boolean(await env.DB.prepare('SELECT 1 FROM member_polls WHERE slug=? AND deleted_at IS NOT NULL').bind(workspace.slug).first());
@@ -19,6 +20,7 @@ const sqlTokens = /'(?:''|[^'])*'|--[^\r\n]*|\/\*[\s\S]*?\*\/|"(?:""|[^"])*"|`(?
 function checkWorkspace(workspace: Workspace) {
   if (!/^[a-z0-9][a-z0-9-]{1,47}$/.test(workspace.slug) || (workspace.namespace !== null && !namespacePattern.test(workspace.namespace))
     || (workspace.publicSlug !== undefined && !/^[a-f0-9]{32}$/.test(workspace.publicSlug))
+    || (workspace.publicAlias !== undefined && !publicAliasPattern.test(workspace.publicAlias))
     || (workspace.memberId !== undefined && workspace.memberId !== 'owner' && !/^[a-f0-9]{32}$/.test(workspace.memberId))) {
     throw new Error('Invalid internal workspace');
   }

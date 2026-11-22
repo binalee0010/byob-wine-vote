@@ -28,6 +28,9 @@ test('confirmed owner permanently deletes exactly one namespace, ballots, live/a
     assert.equal((await person(`${path(first.slug)}/activities/byob/answer`,'PUT',{ranking:[candidate.id],revision:0})).status,200);
     assert.equal((await a(`${path(first.slug)}/admin/activities/byob/state`,'POST',{action:'close',revision:0})).status,200);
     const current=await state(a,first.slug);
+    const publicPath=new URL(current.participantUrl).pathname,publicSlug=publicPath.split('/').at(-1);
+    assert.match(publicSlug,/^[23456789abcdefghjkmnpqrstuvwxyz]{8}$/);
+    assert.equal((await person(publicPath+'/api/bootstrap')).body.participant.submitted.byob,true);
     await local.db.prepare(`INSERT INTO m_${first.slug}_vote_history VALUES('old-archive',0,'today','{}')`).run();
     const bucket=await local.mf.getR2Bucket('PHOTOS');
     const prefix=`members/m_${first.slug}/`;
@@ -47,9 +50,11 @@ test('confirmed owner permanently deletes exactly one namespace, ballots, live/a
     for(const {name}of names)assert.equal((await local.db.prepare(`SELECT count(*) AS n FROM ${name}`).first()).n,0,name);
     assert.equal((await bucket.list({prefix})).objects.length,0);
     assert(await bucket.get('candidates/legacy-unrelated'));assert(await bucket.get(`members/m_${third.slug}/unrelated`));
-    for(const url of [`/v/${first.slug}`,`${path(first.slug)}/bootstrap`,candidate.photoUrl,`${path(first.slug)}/admin/history/old-archive`,`${path(first.slug)}/admin/state`])assert.equal((await a(url)).status,404,url);
+    for(const url of [`/v/${first.slug}`,`${path(first.slug)}/bootstrap`,candidate.photoUrl,`${path(first.slug)}/admin/history/old-archive`,`${path(first.slug)}/admin/state`,publicPath,publicPath+'/api/bootstrap',publicPath+'/api/photos/'+candidate.id])assert.equal((await a(url)).status,404,url);
     assert.equal((await person(`${path(first.slug)}/session`,'POST',{name:'Must not return'})).status,404);
     assert.equal((await person(`${path(first.slug)}/activities/byob/answer`,'PUT',{ranking:[candidate.id],revision:0})).status,404);
+    assert.equal((await person(publicPath+'/api/session','POST',{name:'Must not return'})).status,404);
+    assert.equal((await person(publicPath+'/api/activities/byob/answer','PUT',{ranking:[candidate.id],revision:0})).status,404);
     assert.deepEqual(await state(a,second.slug),beforeSecond);assert.deepEqual(await state(b,third.slug),beforeThird);
     assert.deepEqual(await local.db.prepare('SELECT * FROM members WHERE id=?').bind(account.id).first(),credentials);
     assert.equal((await a('/api/members/session')).body.authenticated,true);
@@ -57,6 +62,7 @@ test('confirmed owner permanently deletes exactly one namespace, ballots, live/a
     assert.deepEqual((await remove(a,first.slug)).body,{ok:true,slug:first.slug});
     assert.equal((await a('/api/members/polls','POST',{title:first.title,requestId:'delete-first'})).status,410);
     assert.equal((await a('/api/members/polls')).body.polls.length,1);
+    assert.deepEqual(await local.db.prepare('SELECT poll_slug,alias FROM poll_public_links WHERE alias=?').bind(publicSlug).first(),{poll_slug:first.slug,alias:publicSlug});
     await assert.rejects(local.db.prepare(`INSERT INTO m_${first.slug}_participants VALUES('late','Late','late')`).run(),/poll_deleted/);
     assert.deepEqual((await local.db.prepare('PRAGMA foreign_key_check').all()).results,[]);
   }finally{await local.mf.dispose();}

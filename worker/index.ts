@@ -3,6 +3,7 @@ import { getMemberSession, getWorkspaceBySlug, handleMemberRequest, type MemberS
 import { ensureWorkspace, workspaceDeleted, workspaceEnv, workspacePhotoKey, type Workspace } from './workspaces';
 import { retryDeletedPollPhotos } from './poll-deletion';
 import { retryPendingNotices } from './signup-mail';
+import { ensurePublicPollLink } from './public-links';
 export { PasswordVerifier };
 export interface Env {
   DB: D1Database;
@@ -94,7 +95,7 @@ function activityPublic(a: Activity) {
     started: a.started_at !== null, revision: a.revision, resultVisibility: a.result_visibility,
     votingMethod: publicVotingMethod(a.voting_method), rankPoints: rankPoints(a) };
 }
-function apiPath(env: Env, path: string) { return `${env.WORKSPACE ? `/v/${env.WORKSPACE.publicSlug ?? env.WORKSPACE.slug}` : ''}/api${path}`; }
+function apiPath(env: Env, path: string) { return `${env.WORKSPACE ? `/v/${env.WORKSPACE.publicAlias ?? env.WORKSPACE.publicSlug ?? env.WORKSPACE.slug}` : ''}/api${path}`; }
 function candidatePublic(c: Pick<Candidate, 'id' | 'number' | 'name' | 'description' | 'object_key'>, env: Env) {
   const version=/\/photos\/([a-f0-9]{32})\/[A-Za-z0-9_-]{8,80}$/.exec(c.object_key)?.[1];
   return { id: c.id, number: c.number, name: c.name, description: c.description ?? '', photoUrl: c.object_key ? apiPath(env, `/photos/${c.id}`)+(version?`?v=${version}`:'') : null };
@@ -346,9 +347,9 @@ async function results(request: Request, env: Env, id: ActivityId) {
   return json({ id, title: current.title, mode: 'ranked-byob', votingMethod: publicVotingMethod(current.voting_method),
     revision: current.revision, ...(participantId ? { participantId } : {}), rows: rankedResults(rows, current.voting_method ?? 'full', env) });
 }
-function participantUrl(request: Request, env: Env) {
+async function participantUrl(request: Request, env: Env) {
   const configured = env.PUBLIC_ORIGIN;
-  const path = env.WORKSPACE ? `/v/${env.WORKSPACE.publicSlug ?? env.WORKSPACE.slug}` : '/';
+  const path = env.WORKSPACE ? `/v/${await ensurePublicPollLink({DB:env.MEMBER_DB??env.DB},env.WORKSPACE)}` : '/';
   if (!configured) return new URL(path, request.url).href;
   try {
     const url = new URL(configured);
@@ -366,7 +367,7 @@ async function adminState(request: Request, env: Env) {
   const { rosterRevision, ...metadata } = event.results[0] as { title: string; memo: string; startsAt: string; timezone: string; participationMode: ParticipationMode; rosterRevision: number };
   const activityList = activities.results as Activity[];
   return json({
-    mode: 'ranked-byob', event: metadata, rosterRevision, participantUrl: participantUrl(request, env),
+    mode: 'ranked-byob', event: metadata, rosterRevision, participantUrl: await participantUrl(request, env),
     photoCleanupPending: (cleanup.results[0] as { count: number }).count,
     activities: activityList.map(a => ({ ...activityPublic(a), resultsLocked: Boolean(a.results_locked) })),
     participants: (participants.results as {id:string;name:string;submitted:number}[]).map(person => ({id:person.id,name:person.name,submitted:{byob:Boolean(person.submitted)}})),

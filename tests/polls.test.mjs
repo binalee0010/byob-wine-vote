@@ -55,27 +55,40 @@ test('two permanent polls isolate participants, ballots, photos, settings, live 
     assert.notEqual(first.slug,second.slug);assert.match(first.slug,/^[a-f0-9]{32}$/);
     assert.equal((await member('/api/members/polls','POST',{...create,title:'Changed retry'})).status,409);
     assert.deepEqual((await other('/api/members/polls')).body,{polls:[]});
+    const publicSlugs=new Map();
     for(const poll of [first,second]){
       const initial=await state(member,poll.slug);
-      assert.equal(initial.participantUrl,`https://vote.test/v/${poll.slug}`);
+      assert.match(initial.participantUrl,/^https:\/\/vote\.test\/v\/[23456789abcdefghjkmnpqrstuvwxyz]{8}$/);
+      publicSlugs.set(poll.slug,new URL(initial.participantUrl).pathname.split('/').at(-1));
+      assert.equal((await state(member,poll.slug)).participantUrl,initial.participantUrl);
       assert.equal(initial.event.title,poll.title);assert.equal(initial.participants.length,0);assert.equal(initial.candidates.length,0);
       assert.equal((await other(`${base(poll.slug)}/admin/state`)).status,403);
       assert.equal((await owner(`${base(poll.slug)}/admin/state`)).status,403);
       assert.equal((await anon(`${base(poll.slug)}/admin/state`)).status,401);
+      assert.equal((await other(`${base(publicSlugs.get(poll.slug))}/admin/state`)).status,403);
+      const settingsPath=`${base(publicSlugs.get(poll.slug))}/admin/settings`;
+      assert.equal((await member(settingsPath,'PATCH',{event:{title:poll.title}},{headers:{'x-member-csrf':''}})).status,403);
+      assert.equal((await member(settingsPath,'PATCH',{event:{title:poll.title}})).status,200);
+      assert.equal((await anon(`${base(publicSlugs.get(poll.slug))}/results/byob`)).status,403);
     }
+    assert.equal(new Set(publicSlugs.values()).size,2);
     const candidates=[];
     for(const [index,poll] of [first,second].entries()){
       const form=photo(`Wine ${index}`);form.set('description',`Information ${index}`);
       const upload=await member(`${base(poll.slug)}/admin/candidates`,'POST',form);assert.equal(upload.status,200);candidates.push(upload.body.candidate);
       assert.equal(upload.body.candidate.description,`Information ${index}`);
+      assert.equal((await anon(`${base(publicSlugs.get(poll.slug))}/photos/${upload.body.candidate.id}`)).status,403);
       assert.equal((await member(`${base(poll.slug)}/admin/settings`,'PATCH',{activities:[{id:'byob',revision:0,votingMethod:'winner',resultVisibility:'public'}]})).status,200);
       assert.equal((await member(`${base(poll.slug)}/admin/activities/byob/state`,'POST',{action:'open',revision:0})).status,200);
     }
     const person=client(local.mf);
-    assert.equal((await person(`${base(first.slug)}/session`,'POST',{name:'Person 0'})).status,200);
+    const joined=await person(`${base(first.slug)}/session`,'POST',{name:'Person 0'});assert.equal(joined.status,200);
+    assert.equal((await person(`${base(publicSlugs.get(first.slug))}/bootstrap`)).body.participant.id,joined.body.participant.id);
     assert.equal((await person(`${base(second.slug)}/activities/byob/answer`,'PUT',{ranking:[candidates[1].id],revision:0})).status,401);
     assert.equal((await person(`${base(first.slug)}/activities/byob/answer`,'PUT',{ranking:[candidates[1].id],revision:0})).status,400);
-    assert.equal((await person(`${base(first.slug)}/activities/byob/answer`,'PUT',{ranking:[candidates[0].id],revision:0})).status,200);
+    assert.equal((await person(`${base(publicSlugs.get(first.slug))}/activities/byob/answer`,'PUT',{ranking:[candidates[0].id],revision:0})).status,200);
+    assert.deepEqual((await person(`${base(first.slug)}/activities/byob`)).body.mine,{ranking:[candidates[0].id]});
+    assert.equal((await person(`${base(publicSlugs.get(second.slug))}/bootstrap`)).body.participant,null);
     assert.equal((await state(member,first.slug)).submittedCount,1);
     assert.equal((await state(member,second.slug)).submittedCount,0);
     assert.equal((await person(`${base(second.slug)}/session`,'POST',{name:'Person 1'})).status,200);
@@ -84,6 +97,16 @@ test('two permanent polls isolate participants, ballots, photos, settings, live 
     assert.equal((await person(`${base(second.slug)}/bootstrap`)).body.participant.name,'Person 1');
     assert.equal((await anon(`${base(second.slug)}/photos/${candidates[0].id}`)).status,404);
     for(const poll of [first,second])assert.equal((await member(`${base(poll.slug)}/admin/activities/byob/state`,'POST',{action:'close',revision:0})).status,200);
+    for(const [index,poll] of [first,second].entries()){
+      const publicResult=await anon(`${base(publicSlugs.get(poll.slug))}/results/byob`);assert.equal(publicResult.status,200);
+      assert.deepEqual(publicResult.body.rows.map(row=>[row.candidateId,row.votes,row.rank]),[[candidates[index].id,1,1]]);
+      assert.equal((await anon(`${base(publicSlugs.get(poll.slug))}/photos/${candidates[index].id}`)).status,200);
+    }
+    const firstPublic=base(publicSlugs.get(first.slug));
+    assert.equal((await member(firstPublic+'/admin/settings','PATCH',{activities:[{id:'byob',revision:0,resultVisibility:'participants'}]})).status,200);
+    assert.equal((await anon(firstPublic+'/results/byob')).status,403);assert.equal((await person(firstPublic+'/results/byob')).status,200);
+    assert.equal((await client(local.mf)(firstPublic+'/session','POST',{name:'Never entered'})).status,403);
+    assert.equal((await client(local.mf)(firstPublic+'/session','POST',{name:'Person 0'})).body.participant.id,joined.body.participant.id);
     const beforeSecond=await state(member,second.slug);
     assert.equal((await member(`${base(first.slug)}/admin/history`,'POST',expectation(await state(member,first.slug)))).status,404);
     const reset=await member(`${base(first.slug)}/admin/reset-all`,'POST',{...expectation(await state(member,first.slug)),confirm:'reset-all'});

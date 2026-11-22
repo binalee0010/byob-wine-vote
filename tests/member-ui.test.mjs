@@ -14,6 +14,8 @@ const bundle = await build({ stdin: { contents: `export {default as MemberPortal
 } }] });
 const { MemberPortal, PasswordReset, MemberSettings, MembershipRequests, MemberPolls, candidateNameChanges, passwordChangeError, progressServerFields, progressDraftChanges, progressSettingsUpdate, submissionStatusText, api, apiPath, setMemberCsrfToken, setMemberWorkspaceSlug } = await import('data:text/javascript;base64,' + Buffer.from(bundle.outputFiles[0].text).toString('base64'));
 const uploadBundle = await build({ stdin: { contents: `export {default as Admin,sendPhoto,PasswordChange,Candidates,Participants,Progress,RankedResponses} from './Admin';export {default as App,PhotoDialog} from './App'; export {default as CandidatePhoto} from './CandidatePhoto';export {default as DestructiveAction} from './DestructiveAction';export {setMemberCsrfToken,setMemberWorkspaceSlug} from './api';`, resolveDir: fileURLToPath(new URL('../src', import.meta.url)), loader: 'tsx' }, bundle: true, write: false, format: 'esm', platform: 'browser', plugins: [{ name: 'legacy-test-hooks', setup(builder) {
+  builder.onResolve({ filter: /^qrcode$/ }, () => ({ path: 'qr', namespace: 'test' }));
+  builder.onLoad({ filter: /^qr$/, namespace: 'test' }, () => ({ contents: `export default {toDataURL:async value=>{globalThis.memberQrCalls?.push(value);return 'data:image/png;base64,c2hvcnQ='}}` }));
   builder.onResolve({ filter: /^react$/ }, () => ({ path: 'hooks', namespace: 'test' }));
   builder.onLoad({ filter: /^hooks$/, namespace: 'test' }, () => ({ contents: `export const useState=v=>globalThis.memberHooks.state(v);export const useRef=v=>globalThis.memberHooks.memo(()=>({current:v}),[]);export const useEffect=(fn,deps)=>globalThis.memberHooks.effect(fn,deps);export const useLayoutEffect=useEffect;export const useCallback=(fn,deps)=>globalThis.memberHooks.memo(()=>fn,deps);export const useMemo=(fn,deps)=>globalThis.memberHooks.memo(fn,deps);export const useId=()=>globalThis.memberHooks.memo(()=> 'member-settings',[]);` }));
   builder.onResolve({ filter: /^react\/jsx-runtime$/ }, ({ path }) => ({ path: pathToFileURL(require.resolve(path)).href, external: true }));
@@ -532,9 +534,27 @@ test('selected poll route pins admin requests and participant links instead of t
     const adminApp = mount(() => uploadApi.Admin({ ...admin.props }));
     try {
       const adminTree = adminApp.render(); const header = named(adminTree, 'AdminHeader');
-      assert.equal(header.props.participantUrl, 'https://vote.example/v/second-poll'); assert.equal(header.props.pollListUrl, '/admin');
+      assert.equal(header.props.participantUrl, undefined); assert.equal(header.props.pollListUrl, '/admin');
     } finally { await settle(); adminApp.close(); }
   } finally { app.close(); restore(); }
+});
+
+test('sharing, copying, QR and participant preview all use the short URL returned by the selected poll', async () => {
+  const restore = environment(); const previousQr = globalThis.memberQrCalls; const clipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+  const copied = []; globalThis.memberQrCalls = [];
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async value => { copied.push(value); } } });
+  const participantUrl = 'https://vote.example/v/a2bc3def'; let progress;
+  globalThis.fetch = async () => Response.json({ participantUrl, event: { title: '짧은 참가 주소' }, activities: [{ id: 'byob', revision: 1, status: 'waiting', started: false }], participants: [], candidates: [], submittedCount: 0 });
+  const app = mount(() => uploadApi.Admin({ member: member(), pollSlug: 'a'.repeat(32), onSettings() {} }));
+  try {
+    assert.equal(named(app.render(), 'AdminHeader').props.participantUrl, undefined); await settle(); const tree = app.render(); const header = named(tree, 'AdminHeader');
+    assert.equal(header.props.participantUrl, participantUrl);
+    assert.equal(nodes(header.type(header.props)).find(node => node.type === 'a' && node.props.children === '참가자 화면 보기 ↗').props.href, participantUrl);
+    const node = named(tree, 'Progress'); progress = mount(() => node.type(node.props)); progress.render(); await settle(); const progressTree = progress.render();
+    const share = nodes(progressTree).find(node => node.type === 'a' && node.props.className === 'share-url'); assert.equal(share.props.href, participantUrl); assert.equal(share.props.children, participantUrl);
+    await button(progressTree, '주소 복사').props.onClick(); assert.deepEqual(copied, [participantUrl]); assert.deepEqual(globalThis.memberQrCalls, [participantUrl]);
+    assert.equal(nodes(progressTree).find(node => node.type === 'img' && node.props.className === 'qr').props.src, 'data:image/png;base64,c2hvcnQ=');
+  } finally { await settle(); progress?.close(); app.close(); globalThis.memberQrCalls = previousQr; if (clipboard) Object.defineProperty(navigator, 'clipboard', clipboard); else delete navigator.clipboard; restore(); }
 });
 
 test('password change accepts 1234 and preserves mismatch and nonempty validation', async () => {

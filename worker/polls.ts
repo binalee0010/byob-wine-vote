@@ -2,6 +2,7 @@ import type { Env } from './index';
 import type { MemberSession } from './members';
 import { ownerPollSlug } from './members';
 import { ensureWorkspace, workspaceDatabase, workspaceDeleted, workspaceSql, type Workspace } from './workspaces';
+import { ensurePublicPollLink } from './public-links';
 
 type PollRow = { slug:string; namespace:string|null; creation_title:string; initialized:number; deleted_at?:number|null };
 const json = (data:unknown,status=200) => Response.json(data,{status,headers:{'Cache-Control':'no-store'}});
@@ -73,5 +74,6 @@ export async function memberPolls(request:Request,env:Env,member:MemberSession,r
   if(row.creation_title!==title)return json({error:'새 투표 요청으로 다시 시도해 주세요.',code:'request_id_reused'},409);
   await initializePoll(env,row);
   if(await workspaceDeleted(env,row))return json({error:'삭제한 투표 요청입니다. 새 투표를 만들어 주세요.',code:'poll_deleted'},410);
+  await ensurePublicPollLink(env,row);
   return json({poll:await publicPoll(env,row)},inserted.meta.changes?201:200);
 }

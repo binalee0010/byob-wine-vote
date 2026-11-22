@@ -148,7 +148,7 @@ export default function Admin({ member, pollSlug, onSettings, onLogout, loggingO
         try { await api('/admin/password', 'POST', { currentPassword, newPassword }); ++epoch.current; setState(null); setPassword(''); setMessage('비밀번호를 변경했습니다. 새 비밀번호로 로그인해 주세요.'); }
         finally { passwordChanging.current = false; setBusy(false); }
     };
-    const participantUrl = state?.participantUrl ?? new URL(member ? '/v/' + encodeURIComponent(pollSlug ?? member.workspaceSlug ?? '') : '/', location.origin).href;
+    const participantUrl = state?.participantUrl ?? (member ? undefined : new URL('/', location.origin).href);
     return <div className="admin-shell"><AdminHeader title={eventTitle || '투표 관리'} participantUrl={participantUrl} pollListUrl={member ? '/admin' : undefined} onSettings={onSettings} onLogout={member ? onLogout : state ? () => { void legacyLogout(); } : undefined} busy={busy || uploadBusy || loggingOut}/><main><Notice error>{sessionError}</Notice><Notice error>{connectionError}</Notice><Notice error>{error}</Notice><Notice>{message}</Notice>{!state && !member && !legacyChecking
             ? <section className="panel login-panel"><h2>관리자 로그인</h2><form onSubmit={legacyLogin}><label>비밀번호<input ref={loginInput} type="password" autoComplete="current-password" required value={password} onChange={event => setPassword(event.target.value)}/></label><button className="primary" disabled={busy || !password}>{busy ? '확인 중…' : '로그인'}</button></form></section>
             : !state

@@ -5,6 +5,7 @@ import { retryPendingNotices } from './signup-mail';
 import { confirmPasswordReset, PasswordResetError, requestPasswordReset } from './password-reset';
 import { memberPolls } from './polls';
 import { deleteMemberPoll } from './poll-deletion';
+import { publicAliasPattern } from './public-links';
 
 type MemberRow = { id:string; email:string; role:'owner'|'member'; status:'pending'|'approved'|'rejected'; workspace_slug:string; namespace:string|null; password_hash:string|null; credential_version:string|null; created_at:number; reviewed_at:number|null };
 export type MemberSession = { id:string; email:string; role:MemberRow['role']; status:MemberRow['status']; workspaceSlug:string; publicWorkspaceSlug?:string; namespace:string|null; csrfToken:string; tokenHash:string; credentialVersion:string };
@@ -63,6 +64,12 @@ export async function ownerPollSlug(env:Env):Promise<string> {
   return row.slug;
 }
 export async function getWorkspaceBySlug(env:Env,slug:string):Promise<Workspace|null> {
+  if(publicAliasPattern.test(slug)) {
+    const link=await env.DB.prepare('SELECT poll_slug FROM poll_public_links WHERE alias=?').bind(slug).first<{poll_slug:string}>();
+    if(!link)return null;
+    const workspace=await getWorkspaceBySlug(env,link.poll_slug==='owner'?await ownerPollSlug(env):link.poll_slug);
+    return workspace?{...workspace,publicAlias:slug}:null;
+  }
   if(!/^[a-f0-9]{32}$/.test(slug))return null;
   if(slug===await ownerPollSlug(env)){
     if(await env.DB.prepare("SELECT 1 FROM member_polls WHERE slug='owner' AND deleted_at IS NOT NULL").first())return null;

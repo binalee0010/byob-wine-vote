@@ -63,9 +63,11 @@ test('approved members isolate ballots, photos, admin routes, live results, rese
     }
     assert.equal((await staleATab('/api/admin/candidates', 'POST', photo('Stale upload'), { headers: { 'x-member-csrf': sessionA.body.csrfToken } })).status, 403);
     assert.equal((await staleATab('/api/admin/candidates', 'POST', {}, { headers: { 'x-member-csrf': '' } })).status, 403);
-    assert.equal((await state(a)).participantUrl, `https://canonical.example.test/v/${aa.workspaceSlug}`);
+    const shareA=(await state(a)).participantUrl;
+    assert.match(shareA, /^https:\/\/canonical\.example\.test\/v\/[23456789abcdefghjkmnpqrstuvwxyz]{8}$/);
+    assert.equal((await state(a)).participantUrl,shareA);
     assert.equal((await state(b)).candidates.length, 0);
-    assert.equal((await state(owner)).participantUrl, `https://canonical.example.test/v/${(await owner('/api/members/session')).body.member.workspaceSlug}`);
+    assert.match((await state(owner)).participantUrl, /^https:\/\/canonical\.example\.test\/v\/[23456789abcdefghjkmnpqrstuvwxyz]{8}$/);
     const pa = await participant(pathA + '/session', 'POST', { name: 'Same name' });
     const pb = await participant(pathB + '/session', 'POST', { name: 'Same name' });
     assert.equal(pa.status, 200); assert.equal(pb.status, 200);
@@ -73,6 +75,7 @@ test('approved members isolate ballots, photos, admin routes, live results, rese
     assert.notEqual(pa.headers.get('set-cookie').split('=')[0], pb.headers.get('set-cookie').split('=')[0]);
     assert.equal((await participant(pathA + '/bootstrap')).body.participant.id, pa.body.participant.id);
     assert.equal((await participant(pathB + '/bootstrap')).body.participant.id, pb.body.participant.id);
+    assert.equal((await participant(new URL(shareA).pathname+'/api/bootstrap')).body.participant.id,pa.body.participant.id);
     assert.equal((await participant('/api/bootstrap')).status, 404);
     const ca = await a('/api/admin/candidates', 'POST', photo('A private wine'));
     const cb = await b('/api/admin/candidates', 'POST', photo('B private wine'));
