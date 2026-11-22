@@ -49,6 +49,7 @@
       const snapshot = {
         pageId,
         userAgent: navigator.userAgent,
+        text: document.body.innerText.slice(0,500),
         order: Array.from(document.querySelectorAll('.custom-rank-summary .rank-wine strong'), element => element.textContent),
         values: Array.from(document.querySelectorAll('.custom-rank-row select'), element => element.value),
         grips: Array.from(document.querySelectorAll('.custom-rank-summary .rank-grip'), center),

@@ -12,7 +12,7 @@ const poll = await host('/api/members/polls', 'POST', { title: 'iPhone drag chec
 assert.equal(poll.status, 201);
 const root = '/v/' + poll.body.poll.slug, api = root + '/api';
 const wines = [];
-for (const name of ['Alpha', 'Bravo', 'Charlie']) {
+for (const name of ['Alpha', 'Bravo', 'Charlie', 'Delta']) {
   const r = await host(api+'/admin/candidates', 'POST', { name, revision: 0, requestId: crypto.randomUUID() });
   assert.equal(r.status, 200); wines.push(r.body.candidate);
 }
@@ -22,7 +22,7 @@ assert.equal((await host(api+'/admin/activities/byob/state','POST',{action:'open
 const participant = client(mf);
 const join = await participant(api+'/session','POST',{name:'Safari'});
 assert.equal(join.status,200);
-assert.equal((await participant(api+'/activities/byob/answer','PUT',{ranking:wines.map(w=>w.id),revision:0,expectedParticipantId:join.body.participant.id})).status,200);
+assert.equal((await participant(api+'/activities/byob/answer','PUT',{ranking:wines.slice(0,3).map(w=>w.id),revision:0,expectedParticipantId:join.body.participant.id})).status,200);
 const dist = new URL('../dist/', import.meta.url);
 let observation = {};
 const commands = { submit: 0, reload: 0 };

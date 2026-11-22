@@ -25,17 +25,21 @@ jobs:
           xcrun simctl boot "$phone"
           npm ci --no-audit --no-fund
           npm run build
-          npm install --prefix "$RUNNER_TEMP/ios-tools" --no-fund --no-audit appium@4.0.0
-          "$RUNNER_TEMP/ios-tools/node_modules/.bin/appium" driver install --source=npm appium-xcuitest-driver@13.6.1
+          mkdir -p "$RUNNER_TEMP/ios-tools"
+          curl -fsSL --retry 3 https://github.com/cameroncooke/AXe/releases/download/v2.1.1/AXe-macOS-homebrew-v2.1.1.tar.gz -o "$RUNNER_TEMP/axe.tar.gz"
+          echo "e8a4d873fe49e38d70b8fe1bea180658b5b997f5501561755e304641b1395256  $RUNNER_TEMP/axe.tar.gz" | shasum -a 256 -c -
+          tar -xzf "$RUNNER_TEMP/axe.tar.gz" -C "$RUNNER_TEMP/ios-tools"
+          axedir=$(dirname "$(find "$RUNNER_TEMP/ios-tools" -type f -name axe | head -n 1)")
+          codesign --force --sign - --timestamp=none "$axedir/Frameworks/FBControlCore.framework" "$axedir/Frameworks/FBSimulatorControl.framework" "$axedir/axe"
+          echo "$axedir" >> "$GITHUB_PATH"
           xcrun simctl bootstatus "$phone" -b
       - name: Drag in Apple Mobile Safari
         run: |
           set -e
           mkdir -p evidence
           node qa-ios/server.mjs > evidence/app.log 2>&1 &
-          "$RUNNER_TEMP/ios-tools/node_modules/.bin/appium" --address 127.0.0.1 --port 4723 > evidence/driver.log 2>&1 &
           for i in {1..60}; do
-            if curl -fsS http://127.0.0.1:4723/status >/dev/null && curl -fsS http://127.0.0.1:8765/ready >/dev/null; then break; fi
+            if curl -fsS http://127.0.0.1:8765/ready >/dev/null; then break; fi
             sleep 2
           done
           node qa-ios/drag.mjs
