@@ -173,6 +173,9 @@ test('custom rank selects replace an unselected wine, swap selected wines and sa
     choose('b', null); choose('a', 1); assert.deepEqual(readback(), [1, '', '']);
     tree = render(); assert.equal(nodes(tree).find(node => node.type === 'button' && node.props.children === '순위 제출').props.disabled, true);
     choose('a', 0); choose('b', 1); choose('c', 0); choose('b', 0); assert.deepEqual(readback(), ['', 0, 1]);
+    const summary = named(ballot.render(), 'RankedBallot'); assert.equal(summary.props.compact, true); assert.deepEqual(summary.props.rankPoints, [5, 2]);
+    summary.props.onDragMove('c', 0); render(); assert.deepEqual(readback(), ['', 1, 0]);
+    named(ballot.render(), 'RankedBallot').props.onMove('c', 1); render(); assert.deepEqual(readback(), ['', 0, 1]);
     tree = render(); const submit = () => nodes(render()).find(node => node.type === 'form').props.onSubmit({ preventDefault() {} });
     await submit(); tree = render(); assert.ok(JSON.stringify(tree).includes('저장 실패')); assert.deepEqual(readback(), ['', 0, 1]);
     fail = false; await submit(); tree = render();

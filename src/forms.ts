@@ -29,6 +29,15 @@ export function moveCandidateRank(ranking: string[], candidateId: string, index:
   return next;
 }
 
+export function moveSelectedCandidateRank(ranking: string[], candidateId: string, index: number) {
+  const previous = ranking.indexOf(candidateId);
+  if (previous < 0 || !Number.isInteger(index) || !ranking[index] || previous === index) return ranking;
+  const selected = ranking.filter(Boolean);
+  const reordered = moveCandidateRank(selected, candidateId, selected.indexOf(ranking[index]));
+  let place = 0;
+  return ranking.map(id => id ? reordered[place++] : id);
+}
+
 export function isCompleteRanking(ranking: string[], candidates: { id: string }[], count = candidates.length) {
   return count > 0 && ranking.length === count && new Set(ranking).size === count
     && ranking.every(id => candidates.some(candidate => candidate.id === id));

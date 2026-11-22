@@ -7,7 +7,10 @@ type Props = {
   ranking: string[];
   submitted: boolean;
   disabled: boolean;
+  compact?: boolean;
+  rankPoints?: number[];
   onMove: (candidateId: string, index: number) => void;
+  onDragMove?: (candidateId: string, index: number) => void;
   onPhoto: (candidate: Candidate) => void;
 };
 type Drag = {
@@ -47,7 +50,7 @@ export function dragScrollDelta(bounds: Pick<DOMRect, 'left' | 'right' | 'top' |
   return 0;
 }
 
-export default function RankedBallot({ candidates, ranking, submitted, disabled, onMove, onPhoto }: Props) {
+export default function RankedBallot({ candidates, ranking, submitted, disabled, compact = false, rankPoints, onMove, onDragMove, onPhoto }: Props) {
   const list = useRef<HTMLOListElement>(null);
   const drag = useRef<Drag | null>(null);
   const focusAfterMove = useRef<HTMLButtonElement | null>(null);
@@ -56,6 +59,7 @@ export default function RankedBallot({ candidates, ranking, submitted, disabled,
   const [dropIndex, setDropIndex] = useState(-1);
   const [announcement, setAnnouncement] = useState('');
   const byId = new Map(candidates.map(candidate => [candidate.id, candidate]));
+  const ordered = compact ? ranking.filter(Boolean) : ranking;
 
   useLayoutEffect(() => {
     const button = focusAfterMove.current;
@@ -88,10 +92,12 @@ export default function RankedBallot({ candidates, ranking, submitted, disabled,
     return () => { window.removeEventListener('blur', cancelDrag); releaseDrag(); };
   }, [cancelDrag, releaseDrag]);
   useLayoutEffect(() => { if (disabled) cancelDrag(); }, [disabled, cancelDrag]);
+  useLayoutEffect(() => { if (compact) cancelDrag(); }, [compact, ranking, cancelDrag]);
 
-  function move(candidate: Candidate, index: number) {
-    onMove(candidate.id, index);
-    setAnnouncement(`${candidate.name}, ${index + 1}위 ${ranking.length - index}점`);
+  function move(candidate: Candidate, index: number, dragged = false) {
+    if (dragged && onDragMove) onDragMove(candidate.id, index);
+    else onMove(candidate.id, index);
+    setAnnouncement(`${candidate.name}, ${index + 1}위 ${(rankPoints?.[index] ?? ranking.length - index).toLocaleString('ko-KR')}점`);
   }
 
   function moveWithButton(event: MouseEvent<HTMLButtonElement>, candidate: Candidate, index: number) {
@@ -133,7 +139,7 @@ export default function RankedBallot({ candidates, ranking, submitted, disabled,
   function startDrag(event: PointerEvent<HTMLLIElement>, candidate: Candidate) {
     if (drag.current) return;
     suppressClick.current = false;
-    if (disabled || ranking.length < 2 || event.button !== 0 || !event.isPrimary) return;
+    if (disabled || ordered.length < 2 || event.button !== 0 || !event.isPrimary) return;
     const capture = event.target as HTMLElement;
     const onGrip = capture.closest('.rank-grip');
     if (capture.closest('.rank-actions') || (event.pointerType !== 'mouse' && !onGrip)) return;
@@ -150,7 +156,7 @@ export default function RankedBallot({ candidates, ranking, submitted, disabled,
   function liftDrag(active: Drag) {
     const { width, height } = active.row.getBoundingClientRect();
     const ghost = document.createElement('div');
-    ghost.className = 'rank-row rank-ghost';
+    ghost.className = 'rank-row rank-ghost' + (compact ? ' custom-rank-summary-row' : '');
     ghost.setAttribute('aria-hidden', 'true');
     ghost.inert = true;
     // Copy the row once so the preview can follow the pointer without rendering the ballot on every move.
@@ -183,40 +189,43 @@ export default function RankedBallot({ candidates, ranking, submitted, disabled,
     cancelDrag();
     if (!active.ghost || !commit || disabled) return;
     const target = indexAt(event.clientX, event.clientY);
-    if (target !== -1 && target !== ranking.indexOf(active.candidate.id)) move(active.candidate, target);
+    if (target !== -1 && target !== ordered.indexOf(active.candidate.id)) move(active.candidate, compact ? ranking.indexOf(ordered[target]) : target, true);
   }
 
-  const sourceIndex = draggedId ? ranking.indexOf(draggedId) : -1;
-  return <fieldset className="ranked-ballot">
-    <legend>와인 순위 정렬</legend>
-    {!submitted && <p className="rank-draft">미제출</p>}
-    <p className="rank-announcement" role="status">{announcement}</p>
-    <ol className={draggedId ? 'rank-list rank-preview' : 'rank-list'} ref={list} role="list" onClickCapture={event => {
+  const sourceIndex = draggedId ? ordered.indexOf(draggedId) : -1;
+  const rows = <ol className={'rank-list' + (compact ? ' custom-rank-summary' : '') + (draggedId ? ' rank-preview' : '')} ref={list} role="list" aria-label={compact ? '선택한 순위' : undefined} onClickCapture={event => {
       if (suppressClick.current && event.detail !== 0) {
         event.preventDefault();
         event.stopPropagation();
       }
     }}>
-      {ranking.map((id, index) => {
+      {ordered.map((id, index) => {
         const candidate = byId.get(id)!;
-        const movable = !disabled && ranking.length > 1;
+        const place = compact ? ranking.indexOf(id) : index;
+        const movable = !disabled && ordered.length > 1;
         const shift = dragPreviewSlot(index, sourceIndex, dropIndex) - index;
         const shiftStyle = shift ? { transform: `translateY(calc(${shift} * (var(--rank-row-height) + var(--rank-row-gap))))` } : undefined;
         return <li className={'rank-row' + (movable ? ' rank-movable' : '') + (index === sourceIndex ? ' rank-placeholder' : '')}
           style={shiftStyle} key={id} onPointerDown={e => startDrag(e, candidate)} onPointerMove={updateDrag}
           onPointerUp={e => endDrag(e, true)} onPointerCancel={e => endDrag(e)} onLostPointerCapture={e => endDrag(e)}>
           <div className={movable ? 'rank-grip can-drag' : 'rank-grip'}>
-            {ranking.length > 1 && <span className="rank-grip-dots" aria-hidden="true">⠿</span>}
-            <div><strong>{index + 1}위</strong><small>{ranking.length - index}점</small></div>
+            {ordered.length > 1 && <span className="rank-grip-dots" aria-hidden="true">⠿</span>}
+            <div><strong>{place + 1}위</strong>{!compact && <small>{ranking.length - place}점</small>}</div>
           </div>
-          <CandidatePhoto candidate={candidate} onPhoto={onPhoto} compact draggable={false} />
-          <div className="rank-wine"><small>와인 {candidate.number}</small><strong>{candidate.name}</strong></div>
+          {!compact && <CandidatePhoto candidate={candidate} onPhoto={onPhoto} compact draggable={false} />}
+          <div className="rank-wine">{!compact && <small>와인 {candidate.number}</small>}<strong>{candidate.name}</strong></div>
           {ranking.length > 1 && <div className="rank-actions">
-            <button type="button" aria-label={candidate.name + ' 위로 이동'} disabled={disabled || index === 0} onClick={e => moveWithButton(e, candidate, index - 1)}>↑</button>
-            <button type="button" aria-label={candidate.name + ' 아래로 이동'} disabled={disabled || index === ranking.length - 1} onClick={e => moveWithButton(e, candidate, index + 1)}>↓</button>
+            <button type="button" aria-label={compact ? `${candidate.name} ${place + 1}위에서 위로 이동` : candidate.name + ' 위로 이동'} disabled={disabled || place === 0} onClick={e => moveWithButton(e, candidate, place - 1)}>↑</button>
+            <button type="button" aria-label={compact ? `${candidate.name} ${place + 1}위에서 아래로 이동` : candidate.name + ' 아래로 이동'} disabled={disabled || place === ranking.length - 1} onClick={e => moveWithButton(e, candidate, place + 1)}>↓</button>
           </div>}
         </li>;
       })}
-    </ol>
+    </ol>;
+  if (compact) return <><p className="rank-announcement" role="status">{announcement}</p>{rows}</>;
+  return <fieldset className="ranked-ballot">
+    <legend>와인 순위 정렬</legend>
+    {!submitted && <p className="rank-draft">미제출</p>}
+    <p className="rank-announcement" role="status">{announcement}</p>
+    {rows}
   </fieldset>;
 }

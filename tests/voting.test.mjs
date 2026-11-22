@@ -168,7 +168,7 @@ test('opening with one candidate cannot race with saving the top-two method', as
 
 test('custom rank points are validated, locked, and totaled in order; full awards the last candidate one point', async () => {
   const formBundle = await build({ entryPoints: ['src/forms.ts'], bundle: true, write: false, format: 'esm', platform: 'browser' });
-  const { selectCustomRank } = await import('data:text/javascript;base64,' + Buffer.from(formBundle.outputFiles[0].text).toString('base64'));
+  const { selectCustomRank, moveSelectedCandidateRank, moveCandidateRank } = await import('data:text/javascript;base64,' + Buffer.from(formBundle.outputFiles[0].text).toString('base64'));
   const local = await createApp();
   try {
     const admin = client(local.mf), first = client(local.mf), second = client(local.mf), anon = client(local.mf);
@@ -200,11 +200,19 @@ test('custom rank points are validated, locked, and totaled in order; full award
     }
     assert.equal((await vote(first, [a, b, c], 0)).status, 200);
     const original = [a, b, d];
+    const sparse = [a, '', c]; assert.deepEqual(moveSelectedCandidateRank(sparse, a, 2), [c, '', a]); assert.deepEqual(sparse, [a, '', c]);
+    for (const invalid of [-1, 1, 3, 1.5, NaN]) assert.equal(moveSelectedCandidateRank(sparse, a, invalid), sparse);
+    assert.equal(moveSelectedCandidateRank(sparse, 'not-selected', 2), sparse);
+    const dragged = moveSelectedCandidateRank(original, d, 0); assert.deepEqual(dragged, [d, a, b]);
+    assert.deepEqual(moveSelectedCandidateRank(dragged, d, 2), original);
+    assert.deepEqual(moveSelectedCandidateRank([a, '', b, c], a, 3), [b, '', c, a]);
+    assert.deepEqual(moveCandidateRank(original, d, 0), [d, a, b]);
     const replaced = selectCustomRank(original, c, 0, 3); assert.deepEqual(replaced, [c, b, d]);
     const swapped = selectCustomRank(replaced, b, 0, 3); assert.deepEqual(swapped, [b, c, d]);
     const selected = selectCustomRank(swapped, a, 1, 3); assert.deepEqual(selected, [b, a, d]); assert.deepEqual(original, [a, b, d]);
     for (const invalid of [-1, 3, 1.5, NaN]) assert.equal(selectCustomRank(selected, c, invalid, 3), selected);
-    assert.equal((await vote(first, selected, 0)).status, 200);
+    const savedOrder = moveSelectedCandidateRank(moveSelectedCandidateRank(selected, d, 0), d, 2);
+    assert.equal((await vote(first, savedOrder, 0)).status, 200);
     assert.deepEqual((await first(detail)).body.mine, { ranking: [b, a, d] });
     assert.equal((await vote(second, [a, d, b], 0)).status, 200);
     assert.equal((await anon(results)).status, 403);

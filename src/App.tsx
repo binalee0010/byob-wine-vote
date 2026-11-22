@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode, type SetStateAction } from 'react';
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode, type SetStateAction } from 'react';
 import { api, ApiError, isParticipantChanged, participantChangedMessage, saveActivityAnswer, statusText, type Activity, type Bootstrap, type ByobResult, type Candidate, type Detail, type Id, type Participant, type Results, type VotingMethod } from './api';
 import MemberPortal from './MemberPortal';
 import Admin from './Admin';
 import { rankLabel, submissionStatusText } from './format';
-import { isCompleteRanking, moveCandidateRank, selectCustomRank } from './forms';
+import { isCompleteRanking, moveCandidateRank, moveSelectedCandidateRank, selectCustomRank } from './forms';
 import RankedBallot from './RankedBallot';
 import CandidatePhoto from './CandidatePhoto';
 import { siteTitle } from './branding';
@@ -277,7 +277,7 @@ function AnswerForm({ activity, view, participantId, alreadySubmitted = false, o
     return <section className="panel answer-panel ranked-answer"><div className="row spread"><h2 id="ranked-vote-heading" tabIndex={-1}>{activity.title}</h2><Status activity={activity}/></div><Notice error>{!detail ? error : ''}</Notice>{!detail ? <>{!error && <p>참여 내용을 불러오는 중이에요.</p>}{error && <button onClick={load}>다시 불러오기</button>}</> : <form onSubmit={submit}>
     {activity.status !== 'open' && <Notice>참여가 마감되어 답변을 제출하거나 수정할 수 없어요.</Notice>}
     {method === 'full' && <RankedBallot candidates={candidates} ranking={ranking} submitted={submitted} disabled={disabled} onMove={moveRank} onPhoto={setPhoto}/>}
-    {method === 'custom' && <CustomRankBallot candidates={candidates} ranking={ranking} rankPoints={rankPoints} disabled={disabled} onSelect={(id, place) => changeRanking(current => selectCustomRank(current, id, place, selectionCount))} onMove={moveRank} onPhoto={setPhoto}/>}
+    {method === 'custom' && <CustomRankBallot candidates={candidates} ranking={ranking} rankPoints={rankPoints} disabled={disabled} onSelect={(id, place) => changeRanking(current => selectCustomRank(current, id, place, selectionCount))} onMove={moveRank} onDragMove={(id, place) => changeRanking(current => moveSelectedCandidateRank(current, id, place))} onPhoto={setPhoto}/>}
     {method === 'winner' && <SingleWineBallot candidates={candidates} selectedId={ranking[0]} disabled={disabled} onSelect={id => changeRanking([id])} onPhoto={setPhoto}/>}
     <Notice error>{error}</Notice>
     {saved && <Notice>투표를 저장했어요.</Notice>}
@@ -304,45 +304,20 @@ export function SingleWineBallot({ candidates, selectedId, disabled, onSelect, o
     </ul>
   </fieldset>;
 }
-export function CustomRankBallot({ candidates, ranking, rankPoints, disabled, onSelect, onMove, onPhoto }: {
+export function CustomRankBallot({ candidates, ranking, rankPoints, disabled, onSelect, onMove, onDragMove, onPhoto }: {
     candidates: Candidate[];
     ranking: string[];
     rankPoints: number[];
     disabled: boolean;
     onSelect: (id: string, place: number | null) => void;
     onMove: (id: string, place: number) => void;
+    onDragMove: (id: string, place: number) => void;
     onPhoto: (candidate: Candidate) => void;
 }) {
-    const focusAfterMove = useRef<HTMLButtonElement | null>(null);
-    useLayoutEffect(() => {
-        const button = focusAfterMove.current;
-        focusAfterMove.current = null;
-        if (!button)
-            return;
-        const next = button.disabled ? button.parentElement?.querySelector<HTMLButtonElement>('button:not(:disabled)') : button;
-        next?.focus({ preventScroll: true });
-    }, [ranking]);
-    function move(event: MouseEvent<HTMLButtonElement>, id: string, place: number) {
-        focusAfterMove.current = event.currentTarget;
-        onMove(id, place);
-    }
     return <fieldset className="custom-rank-ballot">
     <legend>{`상위 ${rankPoints.length}개 순위`}</legend>
     <p className="rank-draft" role="status">{ranking.filter(Boolean).length} / {rankPoints.length}개 선택</p>
-    {ranking.some(Boolean) && <ol className="custom-rank-summary" aria-label="선택한 순위" role="list">
-      {ranking.map((id, place) => {
-                const candidate = candidates.find(row => row.id === id);
-                if (!candidate)
-                    return null;
-                return <li key={id}>
-          <span><strong>{place + 1}위</strong> {candidate.name}</span>
-          {rankPoints.length > 1 && <div className="rank-actions">
-            <button type="button" aria-label={`${candidate.name} ${place + 1}위에서 위로 이동`} disabled={disabled || place === 0} onClick={event => move(event, id, place - 1)}>↑</button>
-            <button type="button" aria-label={`${candidate.name} ${place + 1}위에서 아래로 이동`} disabled={disabled || place === rankPoints.length - 1} onClick={event => move(event, id, place + 1)}>↓</button>
-          </div>}
-        </li>;
-            })}
-    </ol>}
+    {ranking.some(Boolean) && <RankedBallot candidates={candidates} ranking={ranking} rankPoints={rankPoints} compact submitted={false} disabled={disabled} onMove={onMove} onDragMove={onDragMove} onPhoto={onPhoto}/>}
     <ul className="ranked-result-list" role="list">
       {candidates.map(candidate => <li className="custom-rank-row" key={candidate.id}>
         <CandidatePhoto candidate={candidate} onPhoto={onPhoto} compact/>
