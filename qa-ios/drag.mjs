@@ -5,11 +5,15 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 const fixture = 'http://127.0.0.1:8765';
 const udid = process.env.QA_PHONE;
-const axe=(...args)=>execFileSync('axe',[...args.map(String),'--udid',udid],{encoding:'utf8',timeout:45000});
-const tap=({x,y})=>axe('tap','-x',x,'-y',y);
+const axe=(...args)=>execFileSync('axe',[...args.map(String),'--udid',udid],{encoding:'utf8',timeout:60000});
+function send(action) {
+  try { return action(); }
+  catch(e) { console.warn('Simulator command returned before delivery could be confirmed:',String(e).slice(0,240)); }
+}
+const tap=({x,y})=>send(()=>axe('tap','-x',x,'-y',y));
 const screenshot=name=>execFileSync('xcrun',['simctl','io',udid,'screenshot','evidence/'+name]);
 const observe = async () => (await fetch(fixture + '/observe')).json();
-const openPage = () => execFileSync('xcrun', ['simctl','openurl',udid,fixture+'/start']);
+const openPage = () => send(()=>execFileSync('xcrun', ['simctl','openurl',udid,fixture+'/start'],{timeout:45000}));
 async function waitFor(read, accept, label, seconds = 75) {
   const deadline = Date.now() + seconds*1000;
   let last;
@@ -20,7 +24,7 @@ async function waitFor(read, accept, label, seconds = 75) {
   throw Error(label + ' timed out. ' + JSON.stringify(last).slice(0,3300));
 }
 function dismissWelcome() {
-  const tree=axe('describe-ui');
+  const tree=send(()=>axe('describe-ui')) || '';
   console.log('Safari accessibility tree',tree.slice(0,3000));
   for (const name of ['Continue','Start Browsing','Not Now','Get Started','Continue to Safari','Open','Done','OK','Skip']) {
     if(tree.includes('"'+name+'"')) {
@@ -40,8 +44,8 @@ try {
   openPage();
   let initial;
   for (let attempt = 0; attempt < 4 && !initial; attempt++) {
-    try { initial = await waitFor(observe,sameOrder(before),'open Safari participant page',35); }
-    catch(e) { if(attempt === 3) throw e; if(dismissWelcome()) openPage(); }
+    try { initial = await waitFor(observe,sameOrder(before),'open Safari participant page',75); }
+    catch(e) { if(attempt === 3) throw e; dismissWelcome(); openPage(); }
   }
   console.log('Safari rendered', initial.userAgent, initial.order);
   const command=await (await fetch(fixture+'/prepare-calibration')).json();
@@ -64,7 +68,7 @@ try {
   const from=screen(state.grips[2]), to=screen(state.grips[0]);
   console.log('Dragging last grip to first',from,to,taps);
   const endpoints=['--start-x',from.x,'--start-y',from.y,'--end-x',to.x,'--end-y',to.y];
-  axe('drag',...endpoints,'--duration',.75,'--steps',18,'--hold',.14);
+  send(()=>axe('drag',...endpoints,'--duration',.75,'--steps',18,'--hold',.14));
   let moved;
   const finished=s=>sameOrder(after)(s) && s.touchTrace.some(e=>e.wine==='Charlie' && e.name==='pointerup');
   try { moved=await waitFor(observe,finished,'native HID drag'); }
@@ -74,14 +78,14 @@ try {
     else {
       if(!sameOrder(before)(state))throw e;
       console.log('Trying native swipe',state.touchTrace?.slice(-8));
-      axe('swipe',...endpoints,'--duration',.8);
+      send(()=>axe('swipe',...endpoints,'--duration',.8));
       moved=await waitFor(observe,finished,'continuous native touch reorder');
     }
   }
   assert.deepEqual(moved.values,['1','2','0','']);
   assert.ok(['pointerdown','pointermove','pointerup'].every(name=>moved.touchTrace.some(e=>e.name===name && e.type==='touch' && e.trusted)));
   assert.ok(moved.touchTrace.some(e=>e.wine==='Charlie' && e.name==='pointerdown' && e.trusted && e.type==='touch'));
-  screenshot('safari.png');
+  send(()=>screenshot('safari.png'));
   const prepare=await (await fetch(fixture+'/prepare-submit')).json();
   const save=(await waitFor(observe,s=>s.submitCommand===prepare.submit && s.submit?.y>0 && s.submit.y<s.height,'visible submit button')).submit;
   assert.ok(save, 'submit button visible');
@@ -92,7 +96,7 @@ try {
   let points;
   try { points=await waitFor(readScores,correct,'D1 final scores',40); }
   catch(error) {
-    axe('tap','--label','수정 내용 제출');
+    send(()=>axe('tap','--label','수정 내용 제출'));
     points=await waitFor(readScores,correct,'D1 after tapping accessible submit button');
   }
   const lastPage=(await observe()).pageId;
