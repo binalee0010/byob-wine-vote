@@ -55,6 +55,8 @@
       const snapshot = {
         pageId,
         calibration,
+        submitCommand,
+        height: window.innerHeight,
         userAgent: navigator.userAgent,
         text: document.body.innerText.slice(0,500),
         order: Array.from(document.querySelectorAll('.custom-rank-summary .rank-wine strong'), element => element.textContent),

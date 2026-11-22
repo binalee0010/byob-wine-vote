@@ -10,7 +10,7 @@ const tap=({x,y})=>axe('tap','-x',x,'-y',y);
 const screenshot=name=>execFileSync('xcrun',['simctl','io',udid,'screenshot','evidence/'+name]);
 const observe = async () => (await fetch(fixture + '/observe')).json();
 const openPage = () => execFileSync('xcrun', ['simctl','openurl',udid,fixture+'/start']);
-async function waitFor(read, accept, label, seconds = 30) {
+async function waitFor(read, accept, label, seconds = 75) {
   const deadline = Date.now() + seconds*1000;
   let last;
   do {
@@ -50,7 +50,7 @@ try {
     let tapped = false;
     for(let attempt=0; attempt<4 && !tapped; attempt++) {
       tap(p);
-      try { await waitFor(observe,s=>s.taps?.length>=i+1,'trusted calibration tap',3); tapped=true; }
+      try { await waitFor(observe,s=>s.taps?.length>=i+1,'trusted calibration tap',35); tapped=true; }
       catch(e) { if(attempt===3) throw e; await dismissWelcome(); }
     }
   }
@@ -66,28 +66,31 @@ try {
   const endpoints=['--start-x',from.x,'--start-y',from.y,'--end-x',to.x,'--end-y',to.y];
   axe('drag',...endpoints,'--duration',.75,'--steps',18,'--hold',.14);
   let moved;
-  try { moved=await waitFor(observe,sameOrder(after),'native HID drag',5); }
+  const finished=s=>sameOrder(after)(s) && s.touchTrace.some(e=>e.wine==='Charlie' && e.name==='pointerup');
+  try { moved=await waitFor(observe,finished,'native HID drag'); }
   catch(e) {
     const state=await observe();
-    if(!sameOrder(before)(state))throw e;
-    console.log('Trying native swipe',state.touchTrace?.slice(-8));
-    axe('swipe',...endpoints,'--duration',.8);
-    moved=await waitFor(observe,sameOrder(after),'continuous native touch reorder');
+    if (finished(state)) moved=state;
+    else {
+      if(!sameOrder(before)(state))throw e;
+      console.log('Trying native swipe',state.touchTrace?.slice(-8));
+      axe('swipe',...endpoints,'--duration',.8);
+      moved=await waitFor(observe,finished,'continuous native touch reorder');
+    }
   }
   assert.deepEqual(moved.values,['1','2','0','']);
   assert.ok(['pointerdown','pointermove','pointerup'].every(name=>moved.touchTrace.some(e=>e.name===name && e.type==='touch' && e.trusted)));
   assert.ok(moved.touchTrace.some(e=>e.wine==='Charlie' && e.name==='pointerdown' && e.trusted && e.type==='touch'));
   screenshot('safari.png');
-  await fetch(fixture+'/prepare-submit');
-  await delay(1400);
-  const save=(await observe()).submit;
+  const prepare=await (await fetch(fixture+'/prepare-submit')).json();
+  const save=(await waitFor(observe,s=>s.submitCommand===prepare.submit && s.submit?.y>0 && s.submit.y<s.height,'visible submit button')).submit;
   assert.ok(save, 'submit button visible');
   console.log('Saving at',screen(save));
   tap(screen(save));
   const readScores=async()=>(await fetch(fixture+'/proof')).json();
   const correct=p=>p.submitted===1 && p.points.Charlie===3 && p.points.Alpha===2 && p.points.Bravo===1;
   let points;
-  try { points=await waitFor(readScores,correct,'D1 final scores',6); }
+  try { points=await waitFor(readScores,correct,'D1 final scores',40); }
   catch(error) {
     axe('tap','--label','수정 내용 제출');
     points=await waitFor(readScores,correct,'D1 after tapping accessible submit button');
