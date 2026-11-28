@@ -40,3 +40,23 @@ test('only the existing production Worker consumes the deployment failure queue'
   assert.equal(existingConfig({ ...settings, workerName: 'vinolog-vote' }, base).queues, undefined);
   assert.equal(existingConfig({ ...production, workerName: 'another-worker' }, base).queues, undefined);
 });
+
+test('production deployment excludes only the retired event1 hostname from stale build settings', () => {
+  const routes = Object.freeze(['vote.vinalee.dev', 'event1.vinalee.dev', 'alias.example.com', 'sub.event1.vinalee.dev', 'event10.vinalee.dev', 'vote.vinalee.dev']);
+  const production = { ...settings, workerName: 'vinolog-vote', publicOrigin: 'https://vote.vinalee.dev/', routes };
+  const config = existingConfig(production, base);
+  assert.deepEqual(config.routes, ['vote.vinalee.dev', 'alias.example.com', 'sub.event1.vinalee.dev', 'event10.vinalee.dev'].map(pattern => ({ pattern, custom_domain: true })));
+  assert.equal(config.vars.PUBLIC_ORIGIN, 'https://vote.vinalee.dev');
+});
+
+test('other deployments preserve explicitly configured event1 aliases and origins', () => {
+  for (const deployment of [
+    { workerName: 'another-worker', publicOrigin: 'https://vote.vinalee.dev' },
+    { workerName: 'vinolog-vote', publicOrigin: 'https://customer.example.com' },
+    { workerName: 'vinolog-vote', publicOrigin: 'https://event1.vinalee.dev' }
+  ]) {
+    const host = new URL(deployment.publicOrigin).hostname;
+    const routes = [...new Set([host, 'event1.vinalee.dev'])];
+    assert.deepEqual(existingConfig({ ...settings, ...deployment, routes }, base).routes, routes.map(pattern => ({ pattern, custom_domain: true })));
+  }
+});

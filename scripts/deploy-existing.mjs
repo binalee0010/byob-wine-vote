@@ -17,13 +17,14 @@ export function existingConfig(input, base) {
     && input.routes.includes(origin.hostname), 'routes');
   for (const field of ['adminSessionCookie', 'participantSessionCookie']) valid(typeof input[field] === 'string' && /^__Host-[A-Za-z0-9_-]{1,64}$/.test(input[field]), field);
   valid(input.adminSessionCookie !== input.participantSessionCookie, 'session cookies');
+  const production = input.workerName === 'vinolog-vote' && origin.origin === 'https://vote.vinalee.dev';
   return {
     ...base, name: input.workerName, account_id: input.accountId, workers_dev: false, preview_urls: false,
     vars: { PUBLIC_ORIGIN: origin.origin, ADMIN_SESSION_COOKIE: input.adminSessionCookie, PARTICIPANT_SESSION_COOKIE: input.participantSessionCookie, MEMBERSHIP_REQUIRED: 'true' },
     d1_databases: [{ binding: 'DB', database_name: input.databaseName, database_id: input.databaseId, migrations_dir: 'migrations-existing' }],
     r2_buckets: [{ binding: 'PHOTOS', bucket_name: input.bucketName }],
-    ...(input.workerName === 'vinolog-vote' && origin.origin === 'https://vote.vinalee.dev' ? { queues: { consumers: [{ queue: 'vinolog-vote-deploy-failures', max_batch_size: 1, max_retries: 5, retry_delay: 300 }] } } : {}),
-    routes: [...new Set(input.routes)].map(pattern => ({ pattern, custom_domain: true }))
+    ...(production ? { queues: { consumers: [{ queue: 'vinolog-vote-deploy-failures', max_batch_size: 1, max_retries: 5, retry_delay: 300 }] } } : {}),
+    routes: [...new Set(input.routes)].filter(host => !production || host !== 'event1.vinalee.dev').map(pattern => ({ pattern, custom_domain: true }))
   };
 }
 
