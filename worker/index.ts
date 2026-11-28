@@ -431,7 +431,7 @@ async function configure(request: Request, env: Env, id: ActivityId, admin: Sess
     sameRevision(current, revision);
     if (pointsOnly && current.voting_method !== 'top2') fail(409, '투표 방식이 바뀌었습니다. 화면을 새로 고쳐 주세요.', 'voting_method_changed');
   }
-  if (!updated.meta.changes && methodChanges.length) fail(409, '투표 방식과 배점은 리셋한 뒤 변경할 수 있습니다.', 'voting_method_locked');
+  if (!updated.meta.changes && methodChanges.length) fail(409, '투표 기록을 초기화한 뒤 방식과 배점을 변경할 수 있습니다.', 'voting_method_locked');
   return ok();
 }
 async function updateSettings(request: Request, env: Env, admin: Session) {
@@ -513,7 +513,7 @@ async function updateSettings(request: Request, env: Env, admin: Session) {
     if (edit.rankPoints !== null && (edit.votingMethod ?? a?.voting_method) !== 'top2') fail(409, '투표 방식이 바뀌었습니다. 화면을 새로 고쳐 주세요.', 'voting_method_changed');
     if (!a?.started_at) continue;
     if ((edit.votingMethod !== null && edit.votingMethod !== a.voting_method) || (edit.rankPoints !== null && edit.rankPoints !== a.rank_points)) {
-      fail(409, '투표 방식과 배점은 리셋한 뒤 변경할 수 있습니다.', 'voting_method_locked');
+      fail(409, '투표 기록을 초기화한 뒤 방식과 배점을 변경할 수 있습니다.', 'voting_method_locked');
     }
   }
   return fail(409, '설정이 변경되었습니다. 화면을 새로 고쳐 주세요.', 'settings_conflict');
@@ -540,24 +540,25 @@ async function changeState(request: Request, env: Env, id: ActivityId, admin: Se
 }
 async function resetActivities(request: Request, env: Env, admin: Session, id?: ActivityId) {
   const data = await body(request);
-  if (data.confirm !== 'reset') fail(400, '이벤트 리셋을 확인해 주세요.');
-  const reset = "UPDATE activities SET status='waiting',published=0,publish_on_close=0,started_at=NULL,revision=revision+1";
-  const activityIds = ids;
-  let changed: D1Result;
-  if (id) {
-    changed = await env.DB.prepare(`${reset} WHERE id=? AND revision=? AND ${activeAdmin(env)} RETURNING id`)
-      .bind(id, revisionNumber(data.expectedRevision), admin.token_hash, Date.now()).all();
-  } else {
-    const revisions = data.expectedRevisions;
-    if (!revisions || typeof revisions !== 'object' || Array.isArray(revisions)) fail(400, '각 이벤트의 회차를 확인해 주세요.');
-    const expected = revisions as Record<string, unknown>;
-    changed = await env.DB.prepare(`WITH rounds AS MATERIALIZED (
-        SELECT id FROM activities WHERE ${activityIds.map(() => '(id=? AND revision=?)').join(' OR ')}
-      ) ${reset} WHERE id IN (SELECT id FROM rounds WHERE (SELECT count(*) FROM rounds)=?)
-        AND ${activeAdmin(env)} RETURNING id`)
-      .bind(...activityIds.flatMap(key => [key, revisionNumber(expected[key])]), activityIds.length, admin.token_hash, Date.now()).all();
-  }
-  if (changed.results.length !== (id ? 1 : activityIds.length)) {
+  if (data.confirm !== 'reset') fail(400, '투표 기록 초기화를 확인해 주세요.');
+  const activityIds = id ? [id] : ids;
+  const revisions = id ? { [id]: data.expectedRevision } : data.expectedRevisions;
+  if (!revisions || typeof revisions !== 'object' || Array.isArray(revisions)) fail(400, '각 투표의 회차를 확인해 주세요.');
+  const expected = revisions as Record<string, unknown>;
+  const rounds = `WITH rounds AS MATERIALIZED (
+    SELECT id,revision FROM activities WHERE ${activityIds.map(() => '(id=? AND revision=?)').join(' OR ')}
+  )`;
+  const guard = `(SELECT count(*) FROM rounds)=? AND ${activeAdmin(env)}`;
+  const values = [...activityIds.flatMap(key => [key, revisionNumber(expected[key])]), activityIds.length, admin.token_hash, Date.now()];
+  // Keep the round unchanged until the last statement so every deletion has the same atomic guard.
+  const changed = await env.DB.batch([
+    env.DB.prepare(`${rounds} DELETE FROM sessions WHERE role='participant' AND ${guard}`).bind(...values),
+    env.DB.prepare(`${rounds} DELETE FROM participant_entries WHERE ${guard}`).bind(...values),
+    env.DB.prepare(`${rounds} DELETE FROM participant_round_entries WHERE revision IN (SELECT revision FROM rounds) AND ${guard}`).bind(...values),
+    env.DB.prepare(`${rounds} UPDATE activities SET status='waiting',published=0,publish_on_close=0,started_at=NULL,revision=revision+1
+      WHERE id IN (SELECT id FROM rounds) AND ${guard} RETURNING id`).bind(...values)
+  ]);
+  if (changed[3].results.length !== activityIds.length) {
     await requireAdmin(request, env);
     fail(409, '이벤트 회차가 바뀌었습니다. 화면을 새로 고쳐 주세요.', 'revision_changed');
   }
@@ -861,6 +862,8 @@ async function participantLogin(request: Request, env: Env) {
   const token = randomToken(), hash = await digest(token), seconds = 30 * 24 * 3600, now = Date.now();
   await env.DB.batch([
     env.DB.prepare(`DELETE FROM sessions WHERE (token_hash=? OR expires_at<=?) AND ${activePoll(env)} AND ${joinable}`).bind(await digest(readCookie(request, cookieName(env, 'participant'))), now, key),
+    env.DB.prepare(`UPDATE event SET roster_revision=roster_revision+1 WHERE id=1 AND ${activePoll(env)} AND ${joinable}
+      AND EXISTS(SELECT 1 FROM participants p WHERE p.name_key=? AND NOT EXISTS(SELECT 1 FROM participant_entries e WHERE e.participant_id=p.id))`).bind(key, key),
     env.DB.prepare(`INSERT INTO participants(id,name,name_key) SELECT ?,?,? WHERE ${activePoll(env)} AND EXISTS(SELECT 1 FROM activities WHERE id='byob' AND status<>'closed') ON CONFLICT(name_key) DO NOTHING`).bind(crypto.randomUUID(), name, key),
     env.DB.prepare(`INSERT INTO sessions(token_hash,role,participant_id,expires_at,credential_version) SELECT ?,'participant',id,?,NULL FROM participants WHERE name_key=? AND ${activePoll(env)} AND ${joinable}`).bind(hash, now + seconds * 1000, key, key)
   ]);

@@ -63,17 +63,19 @@ for (const legacy of [false, true]) test(`three result audiences enforce current
     assert.equal((await change(admin, 'open')).status, 409);
     assert.equal((await scope(admin, 'participants')).status, 200);
     assert.deepEqual((await state(admin)).byobResults, closed.byobResults);
-    // A retained roster or session cannot establish entry into a later round without a new visit.
+    // Reset revokes old sessions; the next round requires explicitly entering a name again.
     assert.equal((await admin('/api/admin/activities/byob/reset', 'POST', { confirm: 'reset', expectedRevision: 0 })).status, 200);
     assert.equal((await state(admin)).activities[0].resultVisibility, 'private');
     assert.equal((await scope(admin, 'participants', 1)).status, 200);
     assert.equal((await change(admin, 'open', 1)).status, 200);
     assert.equal((await entrant('/api/bootstrap')).status, 200);
+    assert.equal((await entrant('/api/bootstrap')).body.participant, null);
+    assert.equal((await entrant('/api/session', 'POST', { name: 'Entered without submitting' })).status, 200);
     assert.equal((await change(admin, 'close', 1)).status, 200);
     assert.equal((await entrant('/api/results/byob')).status, 200);
     assert.equal((await voter('/api/results/byob')).body.code, 'participant_required');
     assert.equal((await voter('/api/session', 'POST', { name: 'Voter' })).body.code, 'participant_not_entered');
-    assert.equal((await voter('/api/bootstrap')).body.participant.id, voted.body.participant.id);
+    assert.equal((await voter('/api/bootstrap')).body.participant, null);
     assert.equal((await voter('/api/results/byob')).status, 403);
     assert.deepEqual((await local.db.prepare('PRAGMA foreign_key_check').all()).results, []);
   } finally { await local.mf.dispose(); }

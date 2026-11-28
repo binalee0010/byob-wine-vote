@@ -55,7 +55,7 @@ test('the progress page includes submissions and each poll has its own results',
     assert.deepEqual(nodes(tabs).filter(node=>node.type==='button').map(node=>node.props.children),['투표 진행','후보 등록','투표 결과']);
     progress=mount(()=>Progress({state,action:async()=>true,busy:false}));const progressTree=progress.render();
     assert.ok(byName(progressTree,'Participants'));
-    const reset=nodes(progressTree).find(node=>node.type?.name==='DestructiveAction'&&node.props.label==='전체 초기화');assert.ok(reset.props.request.description.includes('현재 결과를 삭제'));assert.ok(reset.props.request.description.includes('되돌릴 수 없습니다'));
+    const reset=nodes(progressTree).find(node=>node.type?.name==='DestructiveAction'&&node.props.label==='투표 전체 초기화');assert.ok(reset.props.request.description.includes('현재 결과를 삭제'));assert.ok(reset.props.request.description.includes('되돌릴 수 없습니다'));
     button(tree,'투표 결과').props.onClick();tree=app.render();
     const shown=nodes(tree).find(node=>node.type==='div'&&node.props.hidden===false);
     assert.ok(byName(shown,'RankedResponses'));assert.equal(byName(shown,'VoteHistory'),undefined);

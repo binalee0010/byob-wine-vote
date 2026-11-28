@@ -83,6 +83,7 @@ test('two permanent polls isolate participants, ballots, photos, settings, live 
     }
     const person=client(local.mf);
     const joined=await person(`${base(first.slug)}/session`,'POST',{name:'Person 0'});assert.equal(joined.status,200);
+    const idle=client(local.mf);assert.equal((await idle(`${base(first.slug)}/session`,'POST',{name:'Unsubmitted person'})).status,200);
     assert.equal((await person(`${base(publicSlugs.get(first.slug))}/bootstrap`)).body.participant.id,joined.body.participant.id);
     assert.equal((await person(`${base(second.slug)}/activities/byob/answer`,'PUT',{ranking:[candidates[1].id],revision:0})).status,401);
     assert.equal((await person(`${base(first.slug)}/activities/byob/answer`,'PUT',{ranking:[candidates[1].id],revision:0})).status,400);
@@ -108,6 +109,16 @@ test('two permanent polls isolate participants, ballots, photos, settings, live 
     assert.equal((await client(local.mf)(firstPublic+'/session','POST',{name:'Never entered'})).status,403);
     assert.equal((await client(local.mf)(firstPublic+'/session','POST',{name:'Person 0'})).body.participant.id,joined.body.participant.id);
     const beforeSecond=await state(member,second.slug);
+    const beforeFirst=await state(member,first.slug);
+    assert.equal((await other(`${base(first.slug)}/admin/activities/byob/reset`,'POST',{confirm:'reset',expectedRevision:0})).status,403);
+    assert.equal((await member(`${firstPublic}/admin/activities/byob/reset`,'POST',{confirm:'reset',expectedRevision:0})).status,200);
+    const cleared=await state(member,first.slug);
+    assert.deepEqual(cleared.participants,[]);assert.equal(cleared.submittedCount,0);assert.deepEqual(cleared.candidates,beforeFirst.candidates);
+    assert.equal(cleared.participantUrl,beforeFirst.participantUrl);assert.deepEqual(cleared.event,beforeFirst.event);
+    assert.equal((await person(`${base(first.slug)}/bootstrap`)).body.participant,null);
+    assert.equal((await idle(`${base(first.slug)}/bootstrap`)).body.participant,null);
+    assert.equal((await person(`${base(second.slug)}/bootstrap`)).body.participant.name,'Person 1');
+    assert.deepEqual(await state(member,second.slug),beforeSecond);
     assert.equal((await member(`${base(first.slug)}/admin/history`,'POST',expectation(await state(member,first.slug)))).status,404);
     const reset=await member(`${base(first.slug)}/admin/reset-all`,'POST',{...expectation(await state(member,first.slug)),confirm:'reset-all'});
     assert.equal(reset.status,200);assert.equal((await state(member,first.slug)).candidates.length,0);

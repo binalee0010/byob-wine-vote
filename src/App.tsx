@@ -90,7 +90,7 @@ function ParticipantApp() {
         if (!previous || !rankedActivity)
             return;
         if (previous.revision !== rankedActivity.revision) {
-            setNotice('투표가 리셋되었습니다.');
+            setNotice('투표가 초기화되었습니다.');
         }
         else if (previous.published && !rankedActivity.published) {
             setNotice(resultHiddenNotice);

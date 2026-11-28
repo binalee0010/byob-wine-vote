@@ -117,9 +117,13 @@ test('winner and top-two voting validate ballots, share the correct totals, and 
     assert.equal((await admin(`${config}/reset`, 'POST', { confirm: 'reset', expectedRevision: 0 })).status, 200);
     const reset = await getAdmin(admin);
     assert.equal(reset.activities[0].votingMethod, 'winner');
-    assert.deepEqual(reset.participants, winnerState.participants.map(person => ({...person,submitted:{byob:false}})));
+    assert.deepEqual(reset.participants, []);
     assert.deepEqual(reset.candidates, winnerState.candidates);
     assert.deepEqual(reset.answers.byob, []);
+    for (const [i, name] of names.entries()) {
+      assert.equal((await participants[i]('/api/bootstrap')).body.participant, null);
+      assert.equal((await participants[i]('/api/session', 'POST', { name })).status, 200);
+    }
     assert.equal((await admin(config, 'PATCH', { votingMethod: 'top2', revision: 0 })).body.code, 'revision_changed');
     assert.equal((await admin(config, 'PATCH', { votingMethod: 'top2', revision: 1 })).status, 200);
     assert.equal((await control(admin, 'open', 1)).status, 200);
@@ -228,6 +232,7 @@ test('custom rank points are validated, locked, and totaled in order; full award
     assert.equal((await admin(`${config}/reset`, 'POST', { confirm: 'reset', expectedRevision: 0 })).status, 200);
     const reset = (await getAdmin(admin)).activities[0];
     assert.deepEqual([reset.votingMethod, reset.rankPoints], ['custom', [5, 2, 0]]);
+    assert.equal((await first('/api/session', 'POST', { name: '배점 검증 1' })).status, 200);
     assert.equal((await admin(config, 'PATCH', { revision: 1, votingMethod: 'full' })).status, 200);
     for (const name of ['배점 E', '배점 F', '배점 G']) candidates.push(await upload(admin, name, 1));
     assert.equal((await control(admin, 'open', 1)).status, 200);
@@ -273,7 +278,7 @@ test('ranked names join freely and concurrent normalized names share one ballot 
     assert.equal((await admin(`${config}/reset`, 'POST', { confirm: 'reset', expectedRevision: 0 })).status, 200);
     const rejoined = await client(local.mf)('/api/session', 'POST', { name: 'ALICE 테스트' });
     assert.deepEqual(rejoined.body.participant, one.body.participant);
-    assert.equal((await getAdmin(admin)).rosterRevision, 1);
-    assert.equal((await first('/api/bootstrap')).body.participant.submitted.byob, false);
+    assert.equal((await getAdmin(admin)).rosterRevision, 2);
+    assert.equal((await first('/api/bootstrap')).body.participant, null);
   } finally { await local.mf.dispose(); }
 });

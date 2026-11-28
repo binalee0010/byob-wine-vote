@@ -55,7 +55,7 @@ test('free entry records joined names and submitted flags, preserves duplicate i
     assertHostPrivacy(current.byobResults);
     assert.equal((await admin('/api/admin/history','POST',{expectedRevision:0,expectedRosterRevision:current.rosterRevision})).status,404);
     assert.equal((await admin('/api/admin/activities/byob/reset','POST',{confirm:'reset',expectedRevision:0})).status,200);
-    current=await state(admin);assert.equal(current.participants.length,3);assert.equal(current.submittedCount,0);assert(current.participants.every(person=>!person.submitted.byob));
+    current=await state(admin);assert.deepEqual(current.participants,[]);assert.equal(current.submittedCount,0);
     assert.equal((await admin('/api/admin/reset-all','POST',{confirm:'reset-all',expectedRevision:1,expectedRosterRevision:current.rosterRevision})).status,200);
     assert.equal((await local.db.prepare('SELECT count(*) AS n FROM participant_entries').first()).n,0);
     assert.deepEqual((await state(admin)).participants,[]);

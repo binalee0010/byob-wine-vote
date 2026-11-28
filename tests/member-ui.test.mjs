@@ -627,7 +627,14 @@ test('submission status is read-only and aggregate controls use server counts wi
       const progressTree = progress.render(); const activity = named(progressTree, 'ActivityControl');
       assert.equal(activity.props.count, 1); assert.equal(activity.props.total, 2);
       assert.ok(!JSON.stringify(progressTree).includes('참가 방식'));
-      const reset = nodes(progressTree).find(node => node.type?.name === 'DestructiveAction' && node.props.label === '전체 초기화'); assert.ok(reset.props.request.description.includes('이 투표의 참가 기록과 세션'));
+      const recordReset = nodes(progressTree).find(node => node.type?.name === 'DestructiveAction' && node.props.label === '투표 기록 초기화');
+      assert.ok(recordReset.props.request.description.includes('제출·미제출 참가자 2명의 입장 기록과 참가 세션'));
+      assert.ok(recordReset.props.request.description.includes('와인과 사진, 투표 정보와 참가 링크는 유지'));
+      assert.ok(recordReset.props.request.description.includes('이름을 다시 입력'));
+      assert.ok(recordReset.props.request.success.includes('투표 기록을 초기화'));
+      assert.deepEqual(recordReset.props.request.body, { confirm: 'reset', expectedRevision: 1 });
+      const reset = nodes(progressTree).find(node => node.type?.name === 'DestructiveAction' && node.props.label === '투표 전체 초기화'); assert.ok(reset.props.request.description.includes('이 투표의 제출·미제출 참가 기록과 참가 세션'));
+      assert.equal(reset.props.request.phrase, '투표 전체 초기화');
       assert.equal(reset.props.request.body.expectedRosterRevision, 7);
       assert.ok(!JSON.stringify(progressTree).includes('이전에 저장된 기록'));
     } finally { await settle(); progress.close(); }

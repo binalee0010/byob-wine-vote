@@ -248,25 +248,25 @@ export function Progress({ state, action, busy, changePassword, onResetAll, poll
     {changePassword && <PasswordChange busy={busy} onChangePassword={changePassword}/>}
     <div className="full-width progress-danger-zone">
     <section className="panel destructive-panel">
-      <h2>투표 리셋</h2>
-      <p className="muted">응답과 결과를 지우고 투표를 대기로 되돌립니다. 참여 정보와 와인은 유지됩니다.</p>
-      {state.activities.map(activity => <DestructiveAction key={activity.id} label="투표 리셋" accessibleLabel={activity.title + ' 리셋'} action={action} busy={busy} focusFallback="activity-progress-heading" request={{
-        title: activity.title + ' 리셋',
-        description: `투표 ${responseCount}건을 삭제합니다. 대기 상태로 돌아가며 결과 공개 설정은 ‘호스트만 보기’로 바뀌고 잠금이 풀립니다. 참여 정보, 와인과 사진, 투표 정보는 유지됩니다.`,
+      <h2>투표 기록 초기화</h2>
+      <p className="muted">제출·미제출 참가 기록과 응답·결과를 지우고 투표를 대기로 되돌립니다. 와인과 사진, 투표 정보와 참가 링크는 유지됩니다.</p>
+      {state.activities.map(activity => <DestructiveAction key={activity.id} label="투표 기록 초기화" accessibleLabel={activity.title + ' 투표 기록 초기화'} action={action} busy={busy} focusFallback="activity-progress-heading" request={{
+        title: '‘' + activity.title + '’ 투표 기록을 초기화할까요?',
+        description: `제출·미제출 참가자 ${state.participants.length}명의 입장 기록과 참가 세션, 투표 ${responseCount}건과 현재 결과를 삭제합니다. 대기 상태로 돌아가며 결과 공개는 ‘호스트만 보기’로 바뀌고 잠금이 풀립니다. 와인과 사진, 투표 정보와 참가 링크는 유지됩니다. 참가자는 같은 링크에서 이름을 다시 입력해 입장할 수 있습니다. 이 작업은 되돌릴 수 없습니다.`,
         path: '/admin/activities/' + activity.id + '/reset', method: 'POST',
-        body: { confirm: 'reset', expectedRevision: activity.revision }, success: activity.title + ' 투표를 대기로 돌리고 응답과 결과를 지웠습니다.',
+        body: { confirm: 'reset', expectedRevision: activity.revision }, success: '투표 기록을 초기화했습니다. 참가자는 같은 링크에서 이름을 다시 입력해 입장할 수 있습니다.',
       }}/>)}
     </section>
     {<section className="panel destructive-panel">
-      <h2>현재 투표 전체 초기화</h2>
-      <p className="muted">현재 참가자, 와인과 응답을 삭제하고 투표를 대기로 되돌립니다. 현재 결과는 삭제됩니다.</p>
-      <DestructiveAction label="전체 초기화" action={resetAll} busy={busy} request={{
+      <h2>투표 전체 초기화</h2>
+      <p className="muted">제출·미제출 참가 기록과 와인·사진, 응답·결과를 모두 지우고 투표를 대기로 되돌립니다. 투표 정보와 참가 링크는 유지됩니다.</p>
+      <DestructiveAction label="투표 전체 초기화" action={resetAll} busy={busy} request={{
                 title: '현재 투표를 전체 초기화할까요?',
-                description: `이 투표의 참가 기록과 세션, 와인 ${state.candidates?.length ?? 0}개와 사진, 투표 ${responseCount}건과 현재 결과를 삭제합니다. 투표 제목·방식·배점, 계정 비밀번호와 세션은 유지됩니다. 이 작업은 되돌릴 수 없습니다.`,
+                description: `이 투표의 제출·미제출 참가 기록과 참가 세션, 와인 ${state.candidates?.length ?? 0}개와 사진, 투표 ${responseCount}건과 현재 결과를 삭제합니다. 투표 제목·메모·방식·배점과 참가 링크, 호스트 로그인은 유지됩니다. 결과 공개는 ‘호스트만 보기’로 바뀝니다. 참가자는 같은 링크에서 이름을 다시 입력해 입장할 수 있습니다. 이 작업은 되돌릴 수 없습니다.`,
                 path: '/admin/reset-all', method: 'POST', body: { confirm: 'reset-all', expectedRevision: expectedRevisions.byob, expectedRosterRevision: state.rosterRevision },
-                phrase: '전체 초기화', success: result => photoCleanupPending(result)
-                    ? '현재 투표를 초기화했습니다. 후보 등록 화면에서 남은 사진을 정리할 수 있습니다.'
-                    : '현재 투표를 초기화했습니다.',
+                phrase: '투표 전체 초기화', success: result => photoCleanupPending(result)
+                    ? '투표 전체를 초기화했습니다. 후보 등록 화면에서 남은 사진을 정리할 수 있습니다.'
+                    : '투표 전체를 초기화했습니다.',
             }}/>
     </section>}
     {pollSlug && removePoll && <section className="panel destructive-panel">
@@ -338,7 +338,7 @@ export function VotingMethodSetting({ activity, busy, field, candidateCount }: {
       </label>)}</div>
       <small>배점은 0~1,000,000점 사이의 정수로, 한 순위 이상은 1점 이상이어야 합니다.</small>
     </>}
-    {activity.started && <small>투표 리셋 후 방식을 바꿀 수 있습니다.</small>}
+    {activity.started && <small>투표 기록 초기화 후 방식을 바꿀 수 있습니다.</small>}
   </>;
 }
 export function ActivitySettings({ activity, busy, field, candidateCount }: { activity: AdminActivity; busy: boolean; field: SettingField; candidateCount: number }) {
@@ -660,14 +660,14 @@ export function Candidates({ state, action, busy, refresh, onUploadBusy }: {
       </label>
       <Notice error>{registrationError}</Notice>
       {staleNames
-                ? <><Notice>투표가 리셋되어 이전에 입력한 이름은 등록할 수 없습니다.</Notice><button type="button" disabled={uploading || busy} onClick={() => { setNamesDraft(null); setRegistrationError(''); }}>이전 입력 지우기</button></>
+                ? <><Notice>투표가 초기화되어 이전에 입력한 이름은 등록할 수 없습니다.</Notice><button type="button" disabled={uploading || busy} onClick={() => { setNamesDraft(null); setRegistrationError(''); }}>이전 입력 지우기</button></>
                 : <button type="submit" className="secondary" disabled={uploading || busy || !namesDraft?.text.trim()}>이름만 등록</button>}
-    </form></>}{uploads.length > 0 && <div className="upload-list">{uploads.map(upload => <div className={'upload-row ' + upload.state} key={upload.id}><div><small className="filename">{upload.fileName ?? upload.file?.name ?? "사진 없이 등록"}</small>{upload.name && <span>{upload.name}</span>}</div><div className="upload-status"><strong>{upload.state === 'done' ? '✓ 등록 완료' : upload.state === 'compressing' ? '사진 처리 중…' : upload.state === 'uploading' ? (upload.file ? `업로드 ${upload.progress}%` : '등록 중…') : upload.state === 'error' ? '등록 실패' : '등록 대기'}</strong>{upload.state === 'uploading' && upload.file && <progress max={100} value={upload.progress} aria-label={upload.file.name + ' 업로드 진행률'}/>}{upload.revision !== byob.revision && upload.state !== 'done' ? <p>{upload.file ? "투표가 리셋되었습니다. 이 사진은 다시 선택해 주세요." : "투표가 리셋되었습니다. 이 이름은 다시 입력해 주세요."}</p> : upload.error && <p role="alert">{upload.error}</p>}{upload.state === 'error' && upload.revision === byob.revision && !locked && <button type="button" disabled={uploading || busy} aria-label={(upload.file?.name ?? upload.name) + ' 다시 시도'} onClick={() => void uploadAll([upload])}>다시 시도</button>}</div></div>)}</div>}{!locked && failedUploads.length > 1 && <button type="button" className="secondary" disabled={uploading || busy} onClick={() => void uploadAll(failedUploads)}>실패한 와인 다시 시도</button>}</section>}<div className="section-heading"><h2 id="registered-wines-heading" tabIndex={-1}>등록된 와인 {state.candidates.length}개</h2></div><form className="candidate-names-form" onSubmit={saveNames} onChange={() => { setNameError(''); setNameFeedback(''); }}><div className="candidate-grid admin-candidates">{state.candidates.map((candidate, index) => <section className="candidate-card" key={candidate.id + ":" + byob.revision}><CandidatePhotoEditor candidate={candidate} revision={byob.revision} busy={busy || uploading} onStart={beginPhotoUpload} onFinish={finishPhotoUpload} refresh={refresh} onPhoto={setPhoto}/><div className="candidate-editor"><p className="eyebrow">와인 {String(candidate.number).padStart(2, '0')}</p><label>표시 이름<ServerTextInput name={candidate.id} aria-label={'와인 ' + candidate.number + ' 표시 이름'} serverValue={candidate.name} required maxLength={maxWineNameLength} disabled={metadataLocked || uploading || busy}/></label>{!locked && <><div className="row"><button type="button" aria-label={candidate.name + ' 위로 이동'} disabled={busy || uploading || index === 0} onClick={() => move(index, -1)}>↑ 위로</button><button type="button" aria-label={candidate.name + ' 아래로 이동'} disabled={busy || uploading || index === state.candidates.length - 1} onClick={() => move(index, 1)}>↓ 아래로</button><button type="button" className="danger" disabled={busy || uploading} onClick={() => setDeleting({ id: candidate.id, revision: byob.revision })}>삭제</button></div>{deleting?.id === candidate.id && deleting.revision === byob.revision && <div className="confirm-box"><p>이 와인을 삭제할까요?</p><div className="row"><button type="button" className="danger" disabled={busy || uploading} onClick={async () => { if (await action('/admin/candidates/' + candidate.id, 'DELETE', { revision: deleting.revision }))
+    </form></>}{uploads.length > 0 && <div className="upload-list">{uploads.map(upload => <div className={'upload-row ' + upload.state} key={upload.id}><div><small className="filename">{upload.fileName ?? upload.file?.name ?? "사진 없이 등록"}</small>{upload.name && <span>{upload.name}</span>}</div><div className="upload-status"><strong>{upload.state === 'done' ? '✓ 등록 완료' : upload.state === 'compressing' ? '사진 처리 중…' : upload.state === 'uploading' ? (upload.file ? `업로드 ${upload.progress}%` : '등록 중…') : upload.state === 'error' ? '등록 실패' : '등록 대기'}</strong>{upload.state === 'uploading' && upload.file && <progress max={100} value={upload.progress} aria-label={upload.file.name + ' 업로드 진행률'}/>}{upload.revision !== byob.revision && upload.state !== 'done' ? <p>{upload.file ? "투표가 초기화되었습니다. 이 사진은 다시 선택해 주세요." : "투표가 초기화되었습니다. 이 이름은 다시 입력해 주세요."}</p> : upload.error && <p role="alert">{upload.error}</p>}{upload.state === 'error' && upload.revision === byob.revision && !locked && <button type="button" disabled={uploading || busy} aria-label={(upload.file?.name ?? upload.name) + ' 다시 시도'} onClick={() => void uploadAll([upload])}>다시 시도</button>}</div></div>)}</div>}{!locked && failedUploads.length > 1 && <button type="button" className="secondary" disabled={uploading || busy} onClick={() => void uploadAll(failedUploads)}>실패한 와인 다시 시도</button>}</section>}<div className="section-heading"><h2 id="registered-wines-heading" tabIndex={-1}>등록된 와인 {state.candidates.length}개</h2></div><form className="candidate-names-form" onSubmit={saveNames} onChange={() => { setNameError(''); setNameFeedback(''); }}><div className="candidate-grid admin-candidates">{state.candidates.map((candidate, index) => <section className="candidate-card" key={candidate.id + ":" + byob.revision}><CandidatePhotoEditor candidate={candidate} revision={byob.revision} busy={busy || uploading} onStart={beginPhotoUpload} onFinish={finishPhotoUpload} refresh={refresh} onPhoto={setPhoto}/><div className="candidate-editor"><p className="eyebrow">와인 {String(candidate.number).padStart(2, '0')}</p><label>표시 이름<ServerTextInput name={candidate.id} aria-label={'와인 ' + candidate.number + ' 표시 이름'} serverValue={candidate.name} required maxLength={maxWineNameLength} disabled={metadataLocked || uploading || busy}/></label>{!locked && <><div className="row"><button type="button" aria-label={candidate.name + ' 위로 이동'} disabled={busy || uploading || index === 0} onClick={() => move(index, -1)}>↑ 위로</button><button type="button" aria-label={candidate.name + ' 아래로 이동'} disabled={busy || uploading || index === state.candidates.length - 1} onClick={() => move(index, 1)}>↓ 아래로</button><button type="button" className="danger" disabled={busy || uploading} onClick={() => setDeleting({ id: candidate.id, revision: byob.revision })}>삭제</button></div>{deleting?.id === candidate.id && deleting.revision === byob.revision && <div className="confirm-box"><p>이 와인을 삭제할까요?</p><div className="row"><button type="button" className="danger" disabled={busy || uploading} onClick={async () => { if (await action('/admin/candidates/' + candidate.id, 'DELETE', { revision: deleting.revision }))
         setDeleting(null); }}>삭제 확인</button><button type="button" onClick={() => setDeleting(null)}>취소</button></div></div>}</>}</div></section>)}</div><Notice error>{nameError}</Notice><Notice>{nameFeedback}</Notice>{!metadataLocked && !!state.candidates.length && <button className="primary" disabled={busy || uploading}>와인 정보 저장</button>}</form>
     <section className="panel destructive-panel">
       <h2>와인 등록 초기화</h2>
       <p className="muted">{locked
-            ? '먼저 투표 진행 화면에서 투표를 리셋해 주세요.'
+            ? '먼저 투표 진행 화면에서 투표 기록을 초기화해 주세요.'
             : '등록된 와인을 모두 삭제합니다. 참여 정보는 유지됩니다.'}</p>
       <DestructiveAction label="와인 등록 초기화" action={resetWines} busy={busy || uploading} disabled={locked} focusFallback="registered-wines-heading" request={{
             title: '와인 등록을 초기화할까요?',
