@@ -324,6 +324,7 @@ export function VotingMethodSetting({ activity, busy, field, candidateCount }: {
     const method = field(progressFieldKey(activity, 'votingMethod'), activity.votingMethod ?? 'full');
     const count = field(progressFieldKey(activity, 'rankCount'), String(activity.rankPoints?.length ?? 2));
     const fullPointsHelp = activity.id + '-full-rank-points';
+    const orderHelp = activity.id + '-candidate-order-help';
     return <>
     <label>투표 방식<select className="activity-reveal-select" {...method} disabled={activity.started || busy} aria-describedby={method.value === 'full' ? fullPointsHelp : undefined}>
       <option value="winner">{votingMethodInfo.winner.label} · 1표</option>
@@ -338,7 +339,12 @@ export function VotingMethodSetting({ activity, busy, field, candidateCount }: {
       </label>)}</div>
       <small>배점은 0~1,000,000점 사이의 정수로, 한 순위 이상은 1점 이상이어야 합니다.</small>
     </>}
-    {activity.started && <small>투표 기록 초기화 후 방식을 바꿀 수 있습니다.</small>}
+    <label>후보 표시 순서<select className="activity-reveal-select" {...field(progressFieldKey(activity, 'candidateOrder'), activity.candidateOrder ?? 'registered')} disabled={activity.started || busy} aria-describedby={orderHelp}>
+      <option value="registered">등록 순서</option>
+      <option value="random">참가자별 무작위 순서</option>
+    </select></label>
+    <small id={orderHelp}>무작위 순서는 참가자별로 정해지며, 다시 접속해도 유지됩니다. 와인 번호와 제출한 순위·선택은 바뀌지 않습니다.</small>
+    {activity.started && <small>투표 기록 초기화 후 방식과 표시 순서를 바꿀 수 있습니다.</small>}
   </>;
 }
 export function ActivitySettings({ activity, busy, field, candidateCount }: { activity: AdminActivity; busy: boolean; field: SettingField; candidateCount: number }) {
@@ -408,7 +414,7 @@ function ActivityControl({ activity, count, total, action, busy, field, startBlo
       <p>{confirm === 'close' ? <>
         지금 참여를 마감할까요?
         {willPublishOnClose && (activity.resultVisibility === 'participants' ? ' 마감하면 참여했던 이름으로 로그인한 참가자만 결과를 볼 수 있습니다. 공개 후에는 다시 시작할 수 없습니다.' : ' 마감하면 링크가 있는 누구나 결과를 볼 수 있습니다. 공개 후에는 다시 시작할 수 없습니다.')}
-      </> : `${votingMethodInfo[activity.votingMethod ?? 'full'].label} 방식으로 투표를 열까요? 시작하면 투표 방식과 후보 목록이 확정됩니다.`}</p>
+      </> : `${votingMethodInfo[activity.votingMethod ?? 'full'].label} 방식으로 투표를 열까요? 시작하면 투표 방식과 후보 목록·표시 순서가 확정됩니다.`}</p>
       <div className="row">
         <button type="button" className="primary" disabled={confirmDisabled} onClick={async () => {
                 if (confirmDisabled)

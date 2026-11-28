@@ -25,9 +25,10 @@ export interface Env {
 
 type ActivityId = 'byob';
 type VotingMethod = 'winner' | 'top2' | 'full';
+type CandidateOrder = 'registered' | 'random';
 type ParticipationMode = 'open' | 'restricted';
 type ResultVisibility = 'private' | 'participants' | 'public';
-type Activity = { id: ActivityId; title: string; status: 'waiting' | 'open' | 'closed'; published: number; publish_on_close: number; started_at: string | null; revision: number; results_locked: number; result_visibility: ResultVisibility; voting_method?: VotingMethod; rank_points?: string };
+type Activity = { id: ActivityId; title: string; status: 'waiting' | 'open' | 'closed'; published: number; publish_on_close: number; started_at: string | null; revision: number; results_locked: number; result_visibility: ResultVisibility; voting_method?: VotingMethod; rank_points?: string; candidate_order: CandidateOrder };
 type Participant = { id: string; name: string };
 type Candidate = { id: string; number: number; name: string; description?: string; object_key: string; content_type: string; request_id: string };
 type RankedCandidate = Candidate & { score: number };
@@ -94,7 +95,7 @@ function rankPoints(a: Activity): number[] { return JSON.parse(a.rank_points ?? 
 function activityPublic(a: Activity) {
   return { id: a.id, title: a.title, status: a.status, published: Boolean(a.published),
     started: a.started_at !== null, revision: a.revision, resultVisibility: a.result_visibility,
-    votingMethod: publicVotingMethod(a.voting_method), rankPoints: rankPoints(a) };
+    votingMethod: publicVotingMethod(a.voting_method), rankPoints: rankPoints(a), candidateOrder: a.candidate_order };
 }
 function apiPath(env: Env, path: string) { return `${env.WORKSPACE ? `/v/${env.WORKSPACE.publicAlias ?? env.WORKSPACE.publicSlug ?? env.WORKSPACE.slug}` : ''}/api${path}`; }
 function candidatePublic(c: Pick<Candidate, 'id' | 'number' | 'name' | 'description' | 'object_key'>, env: Env) {
@@ -288,11 +289,19 @@ async function detail(request: Request, env: Env, id: ActivityId) {
   const row = await env.DB.prepare("SELECT payload FROM answers WHERE activity_id=? AND participant_id=? AND EXISTS(SELECT 1 FROM activities WHERE id=? AND status='open' AND published=0)")
     .bind(id, participant.id, id).first<{ payload: string }>();
   const candidateRows = (await candidates(env)).map(c => candidatePublic(c, env));
+  const displayedCandidates = initial.candidate_order === 'random' ? await randomCandidateOrder(candidateRows, env, initial, participant.id) : candidateRows;
   const current = await activity(env, id);
   sameRevision(current, initial.revision);
   if (current.status !== 'open' || current.published) fail(403, '현재 참여할 수 없는 투표입니다.', 'activity_unavailable');
-  return json({ activity: activityPublic(current), mine: row ? JSON.parse(row.payload) : null, candidates: candidateRows,
+  return json({ activity: activityPublic(current), mine: row ? JSON.parse(row.payload) : null, candidates: displayedCandidates,
     selectionCount: current.voting_method === 'winner' ? 1 : current.voting_method === 'top2' ? rankPoints(current).length : candidateRows.length });
+}
+async function randomCandidateOrder<T extends { id: string }>(rows: T[], env: Env, a: Activity, participantId: string): Promise<T[]> {
+  const seed = [env.WORKSPACE?.namespace ?? env.WORKSPACE?.slug ?? 'owner', a.id, a.revision, participantId];
+  const keyed = await Promise.all(rows.map(async candidate => ({ candidate, key: await digest(JSON.stringify([...seed, candidate.id])) })));
+  // Independent hash keys give a stable permutation without changing candidate numbers or saved rankings.
+  keyed.sort((left, right) => left.key < right.key ? -1 : left.key > right.key ? 1 : left.candidate.id.localeCompare(right.candidate.id));
+  return keyed.map(row => row.candidate);
 }
 async function submit(request: Request, env: Env, id: ActivityId) {
   const participant = await requireParticipant(request, env), data = await body(request);
@@ -411,24 +420,28 @@ function activitySettings(data: Record<string, unknown>) {
     points = JSON.stringify(values);
   }
   const title = data.title === undefined ? null : text(data.title, '투표명', 100);
-  return { title, votingMethod: method === 'custom' ? 'top2' : method ?? null, rankPoints: points };
+  const order = data.candidateOrder;
+  if (order !== undefined && order !== 'registered' && order !== 'random') fail(400, '와인 표시 순서를 확인해 주세요.', 'invalid_candidate_order');
+  return { title, votingMethod: method === 'custom' ? 'top2' : method ?? null, rankPoints: points, candidateOrder: order ?? null };
 }
 async function configure(request: Request, env: Env, id: ActivityId, admin: Session) {
   const data = await body(request);
   const revision = requestRevision(data.revision);
-  const { title, votingMethod, rankPoints: points } = activitySettings(data);
+  const { title, votingMethod, rankPoints: points, candidateOrder } = activitySettings(data);
   const methodChanges = [votingMethod, points].filter(value => value !== null);
   const pointsOnly = points !== null && votingMethod === null;
   const lockedAfterStart = methodChanges.length > 0;
   const updated = await env.DB.prepare(`UPDATE activities
-    SET title=coalesce(?,title)${votingMethod !== null ? ',voting_method=?' : ''}${points !== null ? ',rank_points=?' : ''}
+    SET title=coalesce(?,title)${votingMethod !== null ? ',voting_method=?' : ''}${points !== null ? ',rank_points=?' : ''},candidate_order=coalesce(?,candidate_order)
     WHERE id=? AND revision=? AND (started_at IS NULL OR ?=0)${pointsOnly ? " AND voting_method='top2'" : ''}
+    AND (started_at IS NULL OR ? IS NULL OR candidate_order=?)
     AND ${activeAdmin(env)}`)
-    .bind(title, ...methodChanges, id, revision, Number(lockedAfterStart), admin.token_hash, Date.now()).run();
+    .bind(title, ...methodChanges, candidateOrder, id, revision, Number(lockedAfterStart), candidateOrder, candidateOrder, admin.token_hash, Date.now()).run();
   if (!updated.meta.changes) {
     await requireAdmin(request, env);
     const current = await activity(env, id);
     sameRevision(current, revision);
+    if (candidateOrder !== null && candidateOrder !== current.candidate_order && current.started_at !== null) fail(409, '투표 기록을 초기화한 뒤 와인 표시 순서를 변경할 수 있습니다.', 'candidate_order_locked');
     if (pointsOnly && current.voting_method !== 'top2') fail(409, '투표 방식이 바뀌었습니다. 화면을 새로 고쳐 주세요.', 'voting_method_changed');
   }
   if (!updated.meta.changes && methodChanges.length) fail(409, '투표 기록을 초기화한 뒤 방식과 배점을 변경할 수 있습니다.', 'voting_method_locked');
@@ -475,7 +488,8 @@ async function updateSettings(request: Request, env: Env, admin: Session) {
   const pending = `WITH edits AS MATERIALIZED (
     SELECT json_extract(value,'$.id') AS id,json_extract(value,'$.revision') AS revision,
       json_extract(value,'$.title') AS title,json_extract(value,'$.votingMethod') AS voting_method,
-      json_extract(value,'$.rankPoints') AS rank_points,json_extract(value,'$.publishOnClose') AS publish_on_close,json_extract(value,'$.resultVisibility') AS result_visibility FROM json_each(?)
+      json_extract(value,'$.rankPoints') AS rank_points,json_extract(value,'$.publishOnClose') AS publish_on_close,json_extract(value,'$.resultVisibility') AS result_visibility,
+      json_extract(value,'$.candidateOrder') AS candidate_order FROM json_each(?)
   )`;
   // Each statement uses the same guard. Accepted updates cannot change any of its conditions.
   const guard = `${activeAdmin(env)} AND EXISTS(SELECT 1 FROM event WHERE id=1) AND NOT EXISTS (
@@ -485,6 +499,7 @@ async function updateSettings(request: Request, env: Env, admin: Session) {
     OR (a.started_at IS NOT NULL AND (
       (e.voting_method IS NOT NULL AND e.voting_method IS NOT a.voting_method)
       OR (e.rank_points IS NOT NULL AND e.rank_points IS NOT a.rank_points)
+      OR (e.candidate_order IS NOT NULL AND e.candidate_order IS NOT a.candidate_order)
     ))
   )`;
   const now = Date.now();
@@ -500,7 +515,8 @@ async function updateSettings(request: Request, env: Env, admin: Session) {
       published=CASE WHEN status='closed'
         THEN coalesce((SELECT e.publish_on_close FROM edits e WHERE e.id=activities.id),published) ELSE published END,
       voting_method=coalesce((SELECT e.voting_method FROM edits e WHERE e.id=activities.id),voting_method),
-      rank_points=coalesce((SELECT e.rank_points FROM edits e WHERE e.id=activities.id),rank_points)
+      rank_points=coalesce((SELECT e.rank_points FROM edits e WHERE e.id=activities.id),rank_points),
+      candidate_order=coalesce((SELECT e.candidate_order FROM edits e WHERE e.id=activities.id),candidate_order)
     WHERE id IN (SELECT id FROM edits) AND ${guard} RETURNING id`)
     .bind(encoded, admin.token_hash, now));
   const saved = await env.DB.batch(statements);
@@ -512,6 +528,7 @@ async function updateSettings(request: Request, env: Env, admin: Session) {
     if (a) sameRevision(a, edit.revision);
     if (edit.rankPoints !== null && (edit.votingMethod ?? a?.voting_method) !== 'top2') fail(409, '투표 방식이 바뀌었습니다. 화면을 새로 고쳐 주세요.', 'voting_method_changed');
     if (!a?.started_at) continue;
+    if (edit.candidateOrder !== null && edit.candidateOrder !== a.candidate_order) fail(409, '투표 기록을 초기화한 뒤 와인 표시 순서를 변경할 수 있습니다.', 'candidate_order_locked');
     if ((edit.votingMethod !== null && edit.votingMethod !== a.voting_method) || (edit.rankPoints !== null && edit.rankPoints !== a.rank_points)) {
       fail(409, '투표 기록을 초기화한 뒤 방식과 배점을 변경할 수 있습니다.', 'voting_method_locked');
     }

@@ -9,7 +9,7 @@
 
 [hidden]{display:none!important}
 
-.admin-header-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}.header-link{display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:9px 12px;border:1px solid #dcd1cd;border-radius:10px;background:#fff;font-size:14px;font-weight:600;text-decoration:none}.header-link:hover{background:#f7f0ed;border-color:#b9a39f}@media(max-width:650px){.admin-header{height:auto;min-height:82px;flex-wrap:wrap;padding:16px 0}.admin-header-actions{margin-left:auto}.header-link{font-size:12px;padding:9px 11px}}@media(max-width:380px){.admin-header-actions{width:100%}}
+.admin-header-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap;font-size:14px}.admin-header-actions>.header-link,.admin-header-actions>button{font-size:inherit}.header-link{display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:9px 12px;border:1px solid #dcd1cd;border-radius:10px;background:#fff;font-weight:600;text-decoration:none}.header-link:hover{background:#f7f0ed;border-color:#b9a39f}@media(max-width:650px){.admin-header{height:auto;min-height:82px;flex-wrap:wrap;padding:16px 0}.admin-header-actions{margin-left:auto;font-size:12px}.header-link{padding:9px 11px}}@media(max-width:380px){.admin-header-actions{width:100%}}
 h1,h2,h3,.identity-bar,.submission-list,.response-tabs button,.result-answer{overflow-wrap:anywhere}.section-heading>*,.identity-bar>*,.row>*,.candidate-choice>span,.response-tabs>button{min-width:0}
 /* The gathering uses a single quiet paper panel, matching the event invitation. */
 :root{--wine:#754353;--wine-dark:#603441;--line:#e5dce0;--muted:#83787d;--soft:#f2edef;color:#202024;background:#fff}

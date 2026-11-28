@@ -1,13 +1,14 @@
 export type Id = 'byob';
 export type VotingMethod = 'winner' | 'full' | 'custom';
+export type CandidateOrder = 'registered' | 'random';
 export type ResultVisibility = 'private' | 'participants' | 'public';
-export type Activity = { id: Id; title: string; status: 'waiting' | 'open' | 'closed'; published: boolean; started: boolean; revision: number; votingMethod?: VotingMethod; rankPoints?: number[]; resultVisibility?: ResultVisibility };
+export type Activity = { id: Id; title: string; status: 'waiting' | 'open' | 'closed'; published: boolean; started: boolean; revision: number; votingMethod?: VotingMethod; candidateOrder?: CandidateOrder; rankPoints?: number[]; resultVisibility?: ResultVisibility };
 export type AdminActivity = Activity & { resultsLocked: boolean; resultVisibility: ResultVisibility };
 export type EventInfo = { title: string };
 export type AdminEventInfo = EventInfo & { memo: string };
 export type AdminSettingsPatch = {
   event?: Partial<AdminEventInfo>;
-  activities?: (Pick<Activity, 'id' | 'revision'> & { title?: string; votingMethod?: VotingMethod; rankPoints?: number[]; resultVisibility?: ResultVisibility })[];
+  activities?: (Pick<Activity, 'id' | 'revision'> & { title?: string; votingMethod?: VotingMethod; candidateOrder?: CandidateOrder; rankPoints?: number[]; resultVisibility?: ResultVisibility })[];
 };
 export type Participant = { id: string; name: string; submitted?: Record<Id, boolean> };
 export type Bootstrap = { mode?: 'ranked-byob'; event: EventInfo; activities: Activity[]; participant: Participant | null; admin: boolean };

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { Activity, AdminSettingsPatch, AdminState, VotingMethod } from './api';
+import type { Activity, AdminSettingsPatch, AdminState, CandidateOrder, VotingMethod } from './api';
 import { positiveInteger } from './format';
 
 export function syncedDraft(draft: string, previous: string, next: string) { return draft === previous ? next : draft; }
@@ -68,7 +68,7 @@ export const maxRankCount = 100;
 export const maxRankPoint = 1_000_000;
 export function customRankCount(value: string) { return positiveInteger(value) && Number(value) <= maxRankCount ? Number(value) : 0; }
 
-export function progressFieldKey(activity: Pick<Activity, 'id' | 'revision'>, field: 'title' | 'resultVisibility' | 'votingMethod' | 'rankCount' | `rankPoint:${number}`) {
+export function progressFieldKey(activity: Pick<Activity, 'id' | 'revision'>, field: 'title' | 'resultVisibility' | 'votingMethod' | 'candidateOrder' | 'rankCount' | `rankPoint:${number}`) {
   return `${activity.id}:${activity.revision}:${field}`;
 }
 
@@ -83,6 +83,7 @@ export function progressServerFields(state: SettingsState) {
     if (activity.started) continue;
     const rankPoints = activity.rankPoints ?? [3, 1];
     fields[progressFieldKey(activity, 'votingMethod')] = activity.votingMethod ?? 'full';
+    fields[progressFieldKey(activity, 'candidateOrder')] = activity.candidateOrder ?? 'registered';
     fields[progressFieldKey(activity, 'rankCount')] = String(rankPoints.length);
     for (let place = 0; place < maxRankCount; place++) fields[progressFieldKey(activity, `rankPoint:${place}`)] = rankPoints[place]?.toString() ?? '';
   }
@@ -132,6 +133,8 @@ export function progressSettingsUpdate(state: SettingsState, server: Record<stri
     const methodKey = progressFieldKey(activity, 'votingMethod');
     const countKey = progressFieldKey(activity, 'rankCount');
     const votingMethod = changes[methodKey] as VotingMethod | undefined;
+    const candidateOrder = changes[progressFieldKey(activity, 'candidateOrder')] as CandidateOrder | undefined;
+    if (candidateOrder !== undefined && candidateOrder !== 'registered' && candidateOrder !== 'random') throw new Error('후보 표시 순서를 확인해 주세요.');
     let rankPoints: number[] | undefined;
     const customChanged = votingMethod === 'custom' || changes[countKey] !== undefined || Object.keys(changes).some(key => key.startsWith(`${activity.id}:${activity.revision}:rankPoint:`));
     if ((votingMethod ?? activity.votingMethod) === 'custom' && customChanged) {
@@ -147,10 +150,10 @@ export function progressSettingsUpdate(state: SettingsState, server: Record<stri
       });
       if (!rankPoints.some(points => points > 0)) throw new Error('적어도 한 순위의 배점은 1점 이상이어야 합니다.');
     }
-    if (title === undefined && votingMethod === undefined && rankPoints === undefined && resultVisibility === undefined) return [];
+    if (title === undefined && votingMethod === undefined && candidateOrder === undefined && rankPoints === undefined && resultVisibility === undefined) return [];
     return [{
       id: activity.id, revision: activity.revision, title,
-      votingMethod, ...(rankPoints ? { rankPoints } : {}), ...(resultVisibility ? { resultVisibility } : {}),
+      votingMethod, ...(candidateOrder ? { candidateOrder } : {}), ...(rankPoints ? { rankPoints } : {}), ...(resultVisibility ? { resultVisibility } : {}),
     }];
   });
   if (activities.length) patch.activities = activities;

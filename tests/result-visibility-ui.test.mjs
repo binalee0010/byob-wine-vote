@@ -130,6 +130,84 @@ test('one nearby settings form preserves save retries and start-close guards wit
   } finally { await settle(); control?.close(); app.close(); env.restore(); }
 });
 
+test('candidate order defaults to registered, preserves failed drafts and blocks starting until saved', async () => {
+  const env = environment(); const requests = []; let fail = true, busy = false;
+  let state = { event: { title: '모임' }, activities: [{ ...activity('private', 'waiting'), started: false, resultsLocked: false }], participants: [], submittedCount: 0, candidates: [] };
+  const action = async (path, method, patch, feedback) => {
+    requests.push([path, method, JSON.parse(JSON.stringify(patch))]);
+    if (fail) { feedback.error('저장 실패'); return false; }
+    state = { ...state, activities: [{ ...state.activities[0], ...patch.activities[0] }] }; return true;
+  };
+  const app = mount(() => Progress({ state, action, busy })); let controlNode;
+  const render = () => { const tree = app.render(); controlNode = named(tree, 'ActivityControl'); return tree; };
+  const order = tree => { const settings = named(tree, 'ActivitySettings'); const method = named(settings.type(settings.props), 'VotingMethodSetting'); return nodes(method.type(method.props)).find(node => node.type === 'select' && node.props['aria-describedby'] === 'byob-candidate-order-help'); };
+  const form = tree => nodes(tree).find(node => node.props?.id === 'progress-settings');
+  const button = (tree, label) => nodes(tree).find(node => node.type === 'button' && node.props.children === label);
+  render(); const control = mount(() => controlNode.type(controlNode.props));
+  try {
+    let tree = render(); let select = order(tree);
+    assert.equal(select.props.value, 'registered'); assert.equal(select.props.form, 'progress-settings');
+    assert.deepEqual(nodes(select).filter(node => node.type === 'option').map(node => [node.props.value, node.props.children]), [['registered', '등록 순서'], ['random', '참가자별 무작위 순서']]);
+    button(control.render(), '시작').props.onClick();
+    select.props.onChange({ target: { value: 'random' } }); tree = render();
+    assert.equal(button(control.render(), '시작').props.disabled, true); assert.equal(button(control.render(), '확인').props.disabled, true);
+    await button(control.render(), '확인').props.onClick(); assert.equal(requests.length, 0);
+    await form(tree).props.onSubmit({ preventDefault() {} }); tree = render();
+    assert.equal(order(tree).props.value, 'random'); assert.ok(JSON.stringify(tree).includes('저장 실패'));
+    state = { ...state, activities: [{ ...state.activities[0] }] }; tree = render(); assert.equal(order(tree).props.value, 'random');
+    fail = false; await form(tree).props.onSubmit({ preventDefault() {} }); tree = render();
+    assert.deepEqual(requests, Array(2).fill(['/admin/settings', 'PATCH', { activities: [{ id: 'byob', revision: 2, candidateOrder: 'random' }] }]));
+    assert.equal(button(form(tree), '설정 모두 저장').props.disabled, true); assert.equal(button(control.render(), '확인').props.disabled, false);
+    busy = true; tree = render(); assert.equal(order(tree).props.disabled, true);
+    busy = false; state = { ...state, activities: [{ ...state.activities[0], started: true, status: 'open' }] }; tree = render();
+    assert.equal(order(tree).props.value, 'random'); assert.equal(order(tree).props.disabled, true);
+    const server = progressServerFields(state);
+    assert.equal(server['byob:2:candidateOrder'], undefined);
+    assert.deepEqual(progressSettingsUpdate(state, server, { 'byob:2:candidateOrder': 'registered' }).patch, {});
+    state = { ...state, activities: [{ ...state.activities[0], started: false, revision: 3 }] };
+    assert.deepEqual(progressSettingsUpdate(state, progressServerFields(state), { 'byob:2:candidateOrder': 'registered' }).patch, {});
+    assert.throws(() => progressSettingsUpdate(state, progressServerFields(state), { 'byob:3:candidateOrder': 'invalid' }), /후보 표시 순서/);
+    assert.equal(progressSettingsUpdate(state, progressServerFields(state), { 'byob:3:candidateOrder': 'registered' }).patch.activities[0].candidateOrder, 'registered');
+  } finally { await settle(); control.close(); app.close(); env.restore(); }
+});
+
+test('participant ballots keep server candidate order, original numbers and explicit saved answers for every voting method', async () => {
+  const env = environment();
+  const candidates = ['c', 'a', 'b'].map(id => ({ id, number: { a: 1, b: 2, c: 3 }[id], name: id, photoUrl: null }));
+  try {
+    for (const method of ['full', 'winner', 'custom']) for (const submitted of [false, true]) {
+      const currentActivity = { ...activity('private', 'open'), votingMethod: method, candidateOrder: 'random', rankPoints: [5, 2] };
+      const saved = method === 'full' ? ['b', 'c', 'a'] : method === 'winner' ? ['b'] : ['b', 'a'];
+      const selectionCount = method === 'full' ? 3 : method === 'winner' ? 1 : 2;
+      const requests = [];
+      globalThis.fetch = async (path, init) => {
+        if (init.method === 'GET') return Response.json({ activity: currentActivity, candidates, selectionCount, mine: submitted ? { ranking: saved } : null });
+        requests.push(JSON.parse(init.body)); return Response.json({ ok: true });
+      };
+      const entry = mount(() => RankedVote({ activity: currentActivity, participant, refresh: async () => ({ activities: [currentActivity], participant }), onRevisionChanged() { assert.fail('unchanged vote'); } }));
+      const screen = entry.render(); const answer = mount(() => screen.type(screen.props));
+      try {
+        answer.render(); await settle(); let tree = answer.render();
+        const ballotName = method === 'full' ? 'RankedBallot' : method === 'winner' ? 'SingleWineBallot' : 'CustomRankBallot';
+        let ballot = named(tree, ballotName);
+        assert.deepEqual(ballot.props.candidates, candidates);
+        if (method === 'winner') assert.equal(ballot.props.selectedId, submitted ? 'b' : undefined);
+        else assert.deepEqual(ballot.props.ranking, submitted ? saved : method === 'full' ? ['c', 'a', 'b'] : []);
+        if (!submitted && method === 'winner') ballot.props.onSelect('b');
+        if (!submitted && method === 'custom') { ballot.props.onSelect('b', 0); ballot.props.onSelect('a', 1); }
+        tree = answer.render(); ballot = named(tree, ballotName);
+        if (method !== 'full') {
+          const ballotTree = ballot.type(ballot.props);
+          const rowClass = method === 'winner' ? 'single-choice-row' : 'custom-rank-row';
+          assert.deepEqual(nodes(ballotTree).filter(node => node.props?.className?.startsWith(rowClass)).map(node => node.key), ['c', 'a', 'b']);
+        }
+        await nodes(tree).find(node => node.type === 'form').props.onSubmit({ preventDefault() {} });
+        assert.deepEqual(requests, [{ ranking: !submitted && method === 'full' ? ['c', 'a', 'b'] : saved, revision: 2, expectedParticipantId: participant.id }]);
+      } finally { answer.close(); entry.close(); }
+    }
+  } finally { env.restore(); }
+});
+
 test('cancelling start or close restores its trigger focus or the progress heading when disabled', async () => {
   const env = environment(); let focused; let control;
   const button = (tree, label) => nodes(tree).find(node => node.type === 'button' && node.props.children === label);

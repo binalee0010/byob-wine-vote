@@ -78,7 +78,8 @@ test('two permanent polls isolate participants, ballots, photos, settings, live 
       const upload=await member(`${base(poll.slug)}/admin/candidates`,'POST',form);assert.equal(upload.status,200);candidates.push(upload.body.candidate);
       assert.equal(upload.body.candidate.description,`Information ${index}`);
       assert.equal((await anon(`${base(publicSlugs.get(poll.slug))}/photos/${upload.body.candidate.id}`)).status,403);
-      assert.equal((await member(`${base(poll.slug)}/admin/settings`,'PATCH',{activities:[{id:'byob',revision:0,votingMethod:'winner',resultVisibility:'public'}]})).status,200);
+      assert.equal((await member(`${base(poll.slug)}/admin/settings`,'PATCH',{activities:[{id:'byob',revision:0,votingMethod:'winner',resultVisibility:'public',candidateOrder:index===0?'random':'registered'}]})).status,200);
+      assert.equal((await state(member,poll.slug)).activities[0].candidateOrder,index===0?'random':'registered');
       assert.equal((await member(`${base(poll.slug)}/admin/activities/byob/state`,'POST',{action:'open',revision:0})).status,200);
     }
     const person=client(local.mf);
@@ -109,6 +110,7 @@ test('two permanent polls isolate participants, ballots, photos, settings, live 
     assert.equal((await client(local.mf)(firstPublic+'/session','POST',{name:'Never entered'})).status,403);
     assert.equal((await client(local.mf)(firstPublic+'/session','POST',{name:'Person 0'})).body.participant.id,joined.body.participant.id);
     const beforeSecond=await state(member,second.slug);
+    assert.equal((await other(`${base(first.slug)}/admin/settings`,'PATCH',{activities:[{id:'byob',revision:0,candidateOrder:'registered'}]})).status,403);
     const beforeFirst=await state(member,first.slug);
     assert.equal((await other(`${base(first.slug)}/admin/activities/byob/reset`,'POST',{confirm:'reset',expectedRevision:0})).status,403);
     assert.equal((await member(`${firstPublic}/admin/activities/byob/reset`,'POST',{confirm:'reset',expectedRevision:0})).status,200);

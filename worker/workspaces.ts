@@ -4,6 +4,7 @@ import participantEntries from '../migrations/0006_participant_entries.sql';
 import eventMemo from '../migrations/0008_event_memo.sql';
 import resultAudience from '../migrations/0009_result_audience.sql';
 import candidatePhotoReplace from '../migrations/0011_candidate_photo_replace.sql';
+import candidateOrder from '../migrations/0013_candidate_order.sql';
 import { publicAliasPattern } from './public-links';
 
 export type Workspace = { slug: string; namespace: string | null; memberId?: string; publicSlug?: string; publicAlias?: string };
@@ -13,7 +14,7 @@ export async function workspaceDeleted(env: {DB:D1Database}, workspace:Workspace
 }
 
 const namespacePattern = /^m_[a-f0-9]{32}$/;
-const objectNames = new Set(Array.from(`${initialSchema}\n${participantEntries}\n${resultAudience}\n${candidatePhotoReplace}`.matchAll(/CREATE\s+(?:TABLE|INDEX|TRIGGER)\s+(\w+)/gi), match => match[1].toLowerCase()));
+const objectNames = new Set(Array.from(`${initialSchema}\n${participantEntries}\n${resultAudience}\n${candidatePhotoReplace}\n${candidateOrder}`.matchAll(/CREATE\s+(?:TABLE|INDEX|TRIGGER)\s+(\w+)/gi), match => match[1].toLowerCase()));
 // SQL values and comments must stay literal, including JSON paths and the BYOB activity ID.
 const sqlTokens = /'(?:''|[^'])*'|--[^\r\n]*|\/\*[\s\S]*?\*\/|"(?:""|[^"])*"|`(?:``|[^`])*`|\[[^\]]*\]|[A-Za-z_][A-Za-z0-9_]*/g;
 
@@ -56,12 +57,17 @@ export async function ensureWorkspace(env: { DB: D1Database }, workspace: Worksp
   const descriptionReady = async () => /\bdescription\b/i.test((await env.DB.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name=?").bind(`${workspace.namespace}_candidates`).first<{sql:string}>())?.sql ?? '');
   const entriesReady = async () => Boolean(await env.DB.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").bind(`${workspace.namespace}_participant_entries`).first());
   const memoReady = async () => /\bmemo\b/i.test((await env.DB.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name=?").bind(table).first<{sql:string}>())?.sql ?? '');
-  const audienceReady = async () => /\bresult_visibility\b/i.test((await env.DB.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name=?").bind(`${workspace.namespace}_activities`).first<{sql:string}>())?.sql ?? '');
+  const activityReady = async () => {
+    const sql = (await env.DB.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name=?").bind(`${workspace.namespace}_activities`).first<{sql:string}>())?.sql ?? '';
+    return { audience: /\bresult_visibility\b/i.test(sql), order: /\bcandidate_order\b/i.test(sql) };
+  };
   const photoReplaceReady = async () => Boolean(await env.DB.prepare("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name=?").bind(`${workspace.namespace}_candidate_photo_replace_cleanup`).first());
-  const descriptionExists = exists && await descriptionReady(), entriesExist = exists && await entriesReady(), memoExists = exists && await memoReady(), audienceExists = exists && await audienceReady();
+  const descriptionExists = exists && await descriptionReady(), entriesExist = exists && await entriesReady(), memoExists = exists && await memoReady();
+  const activityColumns = exists ? await activityReady() : { audience: false, order: false };
+  const audienceExists = activityColumns.audience, orderExists = activityColumns.order;
   const photoReplaceExists = exists && await photoReplaceReady();
-  if (descriptionExists && entriesExist && memoExists && audienceExists && photoReplaceExists) return;
-  const statements = `${exists ? '' : initialSchema}\n${descriptionExists ? '' : candidateDescription}\n${entriesExist ? '' : participantEntries}\n${memoExists ? '' : eventMemo}\n${audienceExists ? '' : resultAudience}\n${photoReplaceExists ? '' : candidatePhotoReplace}`.split(/;\s*(?:\r?\n|$)/).map(statement => statement.trim()).filter(statement => statement && !/^PRAGMA\b/i.test(statement));
+  if (descriptionExists && entriesExist && memoExists && audienceExists && photoReplaceExists && orderExists) return;
+  const statements = `${exists ? '' : initialSchema}\n${descriptionExists ? '' : candidateDescription}\n${entriesExist ? '' : participantEntries}\n${memoExists ? '' : eventMemo}\n${audienceExists ? '' : resultAudience}\n${photoReplaceExists ? '' : candidatePhotoReplace}\n${orderExists ? '' : candidateOrder}`.split(/;\s*(?:\r?\n|$)/).map(statement => statement.trim()).filter(statement => statement && !/^PRAGMA\b/i.test(statement));
   // D1 batches are atomic; IF NOT EXISTS and seed conflicts also allow concurrent first access.
   try {
     await env.DB.batch([env.DB.prepare('UPDATE member_polls SET initialized=initialized WHERE slug=?').bind(workspace.slug), ...statements.map(statement => env.DB.prepare(workspaceSql(statement
@@ -70,7 +76,8 @@ export async function ensureWorkspace(env: { DB: D1Database }, workspace: Worksp
   } catch (error) {
     // Another first request may have completed the same atomic schema upgrade.
     if(await workspaceDeleted(env,workspace))throw error;
-    if (!await descriptionReady() || !await entriesReady() || !await memoReady() || !await audienceReady() || !await photoReplaceReady()) throw error;
+    const currentActivity = await activityReady();
+    if (!await descriptionReady() || !await entriesReady() || !await memoReady() || !currentActivity.audience || !currentActivity.order || !await photoReplaceReady()) throw error;
   }
 }
 
