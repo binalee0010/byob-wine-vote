@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type InputHTMLAttributes, type MouseEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type FormEvent, type InputHTMLAttributes, type MouseEvent } from 'react';
 import QRCode from 'qrcode';
 import { api, apiPath, ApiError, getMemberCsrfToken, statusText, type Activity, type AdminActivity, type AdminState, type Candidate, type Member } from './api';
 import { Notice, PhotoDialog, RankedResultList, Status } from './App';
@@ -551,6 +551,7 @@ export function Candidates({ state, action, busy, refresh, onUploadBusy }: {
 }) {
     const [uploads, setUploads] = useState<Upload[]>([]);
     const [uploading, setUploading] = useState(false);
+    const [draggingPhotos, setDraggingPhotos] = useState(false);
     const [photo, setPhoto] = useState<Candidate | null>(null);
     const [deleting, setDeleting] = useState<{
         id: string;
@@ -617,14 +618,29 @@ export function Candidates({ state, action, busy, refresh, onUploadBusy }: {
             onUploadBusy(false);
         }
     }
-    function selectPhotos(event: ChangeEvent<HTMLInputElement>) {
-        const files = Array.from(event.target.files ?? []);
-        event.target.value = '';
+    function addPhotos(files: File[]) {
         if (!files.length || locked || busy || uploadPending.current)
             return;
         const rows: Upload[] = files.map(file => ({ id: crypto.randomUUID(), revision: byob.revision, file, name: '', state: 'ready', progress: 0 }));
         setUploads(current => [...current, ...rows]);
         void uploadAll(rows);
+    }
+    function selectPhotos(event: ChangeEvent<HTMLInputElement>) {
+        const files = Array.from(event.target.files ?? []);
+        event.target.value = '';
+        addPhotos(files);
+    }
+    function dragPhotos(event: DragEvent<HTMLLabelElement>) {
+        event.preventDefault();
+        const allowed = event.dataTransfer.types.includes('Files') && !locked && !busy && !uploadPending.current;
+        event.dataTransfer.dropEffect = allowed ? 'copy' : 'none';
+        setDraggingPhotos(allowed);
+    }
+    function dropPhotos(event: DragEvent<HTMLLabelElement>) {
+        event.preventDefault();
+        event.stopPropagation();
+        setDraggingPhotos(false);
+        addPhotos(Array.from(event.dataTransfer.files));
     }
     function registerNames(event: FormEvent<HTMLFormElement>) {
         event.preventDefault();
@@ -650,7 +666,7 @@ export function Candidates({ state, action, busy, refresh, onUploadBusy }: {
             return;
         await saveCandidateNames(event, state, action, setNameError, setNameFeedback);
     }
-    return <>{(!locked || metadataLocked || uploads.length > 0) && <section className="panel">{locked ? metadataLocked && <Notice>진행 중에는 사진만 변경할 수 있습니다.</Notice> : <><label className="file-picker">와인 사진 등록<input type="file" accept="image/jpeg,image/png,image/webp,.heic,.heif" multiple disabled={uploading || busy} onChange={selectPhotos}/></label><small>JPEG·PNG·WebP · HEIC는 JPEG·PNG로 변환해 주세요.</small>
+    return <>{(!locked || metadataLocked || uploads.length > 0) && <section className="panel">{locked ? metadataLocked && <Notice>진행 중에는 사진만 변경할 수 있습니다.</Notice> : <><label className={'file-picker' + (draggingPhotos && !uploading && !busy ? ' is-dragging' : '')} onDragOverCapture={dragPhotos} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDraggingPhotos(false); }} onDropCapture={dropPhotos}>와인 사진 등록<input type="file" accept="image/jpeg,image/png,image/webp,.heic,.heif" multiple aria-label="와인 사진 등록" aria-describedby="candidate-photo-drop-help" disabled={uploading || busy} onChange={selectPhotos}/><small id="candidate-photo-drop-help">사진을 여기에 끌어다 놓거나 파일을 선택하면 바로 등록됩니다.</small></label><small>JPEG·PNG·WebP · HEIC는 JPEG·PNG로 변환해 주세요.</small>
     <form className="wine-name-form" onSubmit={registerNames}>
       <label>사진 없이 등록
         <textarea value={namesDraft?.text ?? ''} disabled={uploading || busy || staleNames} rows={3} placeholder="와인 이름을 한 줄에 하나씩 입력" onChange={event => {

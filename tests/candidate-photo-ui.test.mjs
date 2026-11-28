@@ -15,6 +15,10 @@ const bundle = await build({ stdin: { contents: `export {CandidatePhotoEditor,se
 const { CandidatePhotoEditor, sendPhoto, Candidates, setMemberCsrfToken, setMemberWorkspaceSlug } = await import('data:text/javascript;base64,' + Buffer.from(bundle.outputFiles[0].text).toString('base64'));
 const nodes = tree => !tree || typeof tree !== 'object' ? [] : Array.isArray(tree) ? tree.flatMap(nodes) : [tree, ...nodes(tree.props?.children)];
 const named = (tree, name) => nodes(tree).find(node => node.type?.name === name);
+const photoPicker = tree => nodes(tree).find(node => node.type === 'label' && node.props.className?.split(' ').includes('file-picker'));
+function photoDrag(files = [], types = ['Files']) {
+  return { dataTransfer: { files, types, dropEffect: 'none' }, preventDefault() { this.defaultPrevented = true; }, stopPropagation() { this.propagationStopped = true; } };
+}
 const settle = () => new Promise(resolve => setImmediate(resolve));
 function mount(render) {
   let cursor = 0; const slots = [], pending = [];
@@ -41,7 +45,7 @@ function environment() {
 }
 const candidate = { id: 'wine', number: 7, name: '원래 이름', description: '미저장 이름과 독립', photoUrl: '/old-photo' };
 
-test('selecting multiple photos uploads immediately, continues after failure and retries only the original failed request', async () => {
+for (const method of ['selecting', 'dropping']) test(`${method} multiple photos uploads immediately, continues after failure and retries only the original failed request`, async () => {
   const env = environment(); const prepared = []; const busy = []; let refreshed = 0;
   const state = { activities: [{ id: 'byob', revision: 4, status: 'waiting', started: false }], candidates: [candidate], photoCleanupPending: 0 };
   globalThis.prepareTestPhoto = async file => { prepared.push(file.name); return new File([file], file.name + '.jpg', { type: 'image/jpeg' }); };
@@ -53,8 +57,15 @@ test('selecting multiple photos uploads immediately, continues after failure and
   try {
     let tree = app.render(); const input = nodes(tree).find(node => node.type === 'input' && node.props.multiple);
     input.props.onChange({ target: { files: [], value: '' } }); await settle(); assert.equal(env.requests.length, 0); assert.deepEqual(busy, []);
-    const selection = { files, value: 'selected' }; input.props.onChange({ target: selection }); input.props.onChange({ target: { files, value: 'duplicate' } }); await settle();
-    assert.equal(selection.value, ''); assert.equal(env.requests.length, 1); tree = app.render(); assert.equal(rows(tree).length, 3);
+    const selection = { files, value: 'selected' };
+    if (method === 'dropping') {
+      const drop = photoDrag(files); drop.target = input;
+      photoPicker(tree).props.onDropCapture(drop); photoPicker(tree).props.onDropCapture(photoDrag(files));
+      assert.equal(drop.defaultPrevented, true); assert.equal(drop.propagationStopped, true);
+    } else input.props.onChange({ target: selection });
+    input.props.onChange({ target: { files, value: 'duplicate' } }); await settle();
+    if (method === 'selecting') assert.equal(selection.value, '');
+    assert.equal(env.requests.length, 1); tree = app.render(); assert.equal(rows(tree).length, 3);
     assert.equal(nodes(tree).find(node => node.type === 'input' && node.props.multiple).props.disabled, true);
     assert.equal(button(tree, '선택한 사진 등록'), undefined);
     for (let i = 0; i < 3; i++) {
@@ -75,6 +86,38 @@ test('selecting multiple photos uploads immediately, continues after failure and
     env.requests[3].respond(200, { candidate: { id: 'saved-retry', number: 3, name: '와인 03', photoUrl: '/retried' } }); await settle(); tree = app.render();
     assert.ok(rows(tree).every(row => row.props.className === 'upload-row done')); assert.equal(button(tree, '실패한 와인 다시 시도'), undefined);
     assert.equal(new Set(env.requests.map(request => request.body.get('requestId'))).size, 3); assert.equal(refreshed, 3); assert.deepEqual(busy, [true, false, true, false]);
+  } finally { app.close(); env.restore(); }
+});
+
+test('photo drag feedback stays inside the picker, ignores non-files and respects busy and locked states', async () => {
+  const env = environment(); let busy = false;
+  const state = { activities: [{ id: 'byob', revision: 4, status: 'waiting', started: false }], candidates: [], photoCleanupPending: 0 };
+  globalThis.prepareTestPhoto = async file => file;
+  const app = mount(() => Candidates({ state, action: async () => true, busy, refresh: async () => {}, onUploadBusy() {} }));
+  const file = new File(['one'], 'one.png', { type: 'image/png' });
+  try {
+    let picker = photoPicker(app.render()); const drag = photoDrag(); picker.props.onDragOverCapture(drag);
+    assert.equal(drag.defaultPrevented, true); assert.equal(drag.dataTransfer.dropEffect, 'copy');
+    picker = photoPicker(app.render()); assert.match(picker.props.className, /is-dragging/);
+    picker.props.onDragLeave({ currentTarget: { contains: () => true }, relatedTarget: {} });
+    assert.match(photoPicker(app.render()).props.className, /is-dragging/);
+    picker.props.onDragLeave({ currentTarget: { contains: () => false }, relatedTarget: null });
+    assert.equal(photoPicker(app.render()).props.className, 'file-picker');
+    const textDrag = photoDrag([], ['text/uri-list']); picker.props.onDragOverCapture(textDrag);
+    assert.equal(textDrag.dataTransfer.dropEffect, 'none'); const textDrop = photoDrag([], ['text/uri-list']); picker.props.onDropCapture(textDrop);
+    assert.equal(textDrop.defaultPrevented, true); assert.equal(env.requests.length, 0);
+    busy = true; picker = photoPicker(app.render()); const blockedDrag = photoDrag([file]); picker.props.onDragOverCapture(blockedDrag); picker.props.onDropCapture(photoDrag([file]));
+    await settle(); assert.equal(blockedDrag.dataTransfer.dropEffect, 'none'); assert.equal(env.requests.length, 0);
+    assert.equal(nodes(app.render()).filter(node => node.props?.className?.startsWith('upload-row ')).length, 0);
+    busy = false; picker = photoPicker(app.render()); picker.props.onDropCapture(photoDrag([file])); await settle();
+    assert.equal(env.requests.length, 1); const duringUpload = photoDrag([file]); photoPicker(app.render()).props.onDragOverCapture(duringUpload);
+    assert.equal(duringUpload.dataTransfer.dropEffect, 'none'); assert.equal(photoPicker(app.render()).props.className, 'file-picker');
+    env.requests[0].respond(200, { candidate: { id: 'one', name: '와인 01' } }); await settle();
+    picker = photoPicker(app.render()); picker.props.onDropCapture(photoDrag([file])); await settle(); assert.equal(env.requests.length, 2);
+    env.requests[1].respond(200, { candidate: { id: 'two', name: '와인 02' } }); await settle();
+    state.activities[0].started = true; state.activities[0].status = 'open';
+    assert.equal(photoPicker(app.render()), undefined);
+    assert.equal(env.requests.length, 2);
   } finally { app.close(); env.restore(); }
 });
 
